@@ -334,9 +334,21 @@
           <span class="chip-dot tripo"></span>
           Tripo3D
         </button>
+        <button class="workspace-chip" on:click={() => openWorkspace('https://sketchfab.com/feed')}>
+          <span class="chip-dot sketchfab"></span>
+          Sketchfab
+        </button>
         <button class="workspace-chip" on:click={() => openWorkspace('https://lumalabs.ai/genie')}>
           <span class="chip-dot luma"></span>
           Luma AI
+        </button>
+        <button class="workspace-chip" on:click={() => openWorkspace('https://poly.pizza')}>
+          <span class="chip-dot polypizza"></span>
+          Poly Pizza
+        </button>
+        <button class="workspace-chip" on:click={() => openWorkspace('https://polyhaven.com/models')}>
+          <span class="chip-dot polyhaven"></span>
+          Poly Haven
         </button>
         <button class="workspace-chip" on:click={() => openWorkspace('https://hyperhuman.deemos.com/rodin')}>
           <span class="chip-dot rodin"></span>
@@ -683,6 +695,9 @@
   .chip-dot.tripo { background: #10b981; }
   .chip-dot.luma { background: #f59e0b; }
   .chip-dot.rodin { background: #ec4899; }
+  .chip-dot.sketchfab { background: #0ea5e9; }
+  .chip-dot.polypizza { background: #a855f7; }
+  .chip-dot.polyhaven { background: #14b8a6; }
 
   .model-card {
     background: #13171f;

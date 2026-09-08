@@ -22,9 +22,18 @@ function findGlbUrlsInObject(obj: unknown, found: string[] = []): string[] {
   }
 
   for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
-    if (typeof val === 'string' && (val.includes('.glb') || val.includes('meshopt'))) {
-      if (val.startsWith('http://') || val.startsWith('https://')) {
-        found.push(val);
+    if (typeof val === 'string') {
+      const lower = val.toLowerCase();
+      if (
+        lower.includes('.glb') ||
+        lower.includes('meshopt') ||
+        lower.includes('.gltf') ||
+        lower.includes('file.osgjs') ||
+        lower.includes('model_file.bin')
+      ) {
+        if (val.startsWith('http://') || val.startsWith('https://')) {
+          found.push(val);
+        }
       }
     } else if (typeof val === 'object' && val !== null) {
       findGlbUrlsInObject(val, found);

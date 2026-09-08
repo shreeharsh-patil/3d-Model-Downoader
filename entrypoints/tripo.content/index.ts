@@ -50,10 +50,18 @@ function getModelKey(url: string | undefined): string | undefined {
 
 function extractTripoModelName(): string | undefined {
   try {
+    const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
+    if (ogTitle) {
+      const clean = ogTitle.split(/[-–|]/)[0].trim();
+      if (clean.length > 0 && clean.length < 80 && !/tripo|workspace|studio|luma|rodin|sketchfab|poly/i.test(clean)) {
+        return clean;
+      }
+    }
+
     const heading = document.querySelector('h1, h2, [class*="model-name"], [class*="title"]');
     if (heading?.textContent && heading.textContent.trim().length > 0) {
       const text = heading.textContent.trim();
-      if (text.length < 50 && !/tripo|workspace|studio|luma|rodin/i.test(text)) {
+      if (text.length < 80 && !/tripo|workspace|studio|luma|rodin|sketchfab|poly/i.test(text)) {
         return text;
       }
     }
@@ -394,6 +402,15 @@ export default defineContentScript({
     'https://*.hyperhuman.top/*',
     'https://*.deemos.com/*',
     'https://*.hyper3d.ai/*',
+    'https://*.sketchfab.com/*',
+    'https://sketchfab.com/*',
+    'https://*.poly.pizza/*',
+    'https://poly.pizza/*',
+    'https://*.polypizza.net/*',
+    'https://*.polyhaven.com/*',
+    'https://polyhaven.com/*',
+    'https://*.polyhaven.org/*',
+    'https://polyhaven.org/*',
   ],
   runAt: 'document_start',
   cssInjectionMode: 'ui',
