@@ -2,7 +2,7 @@ import { browser, createShadowRootUi, defineContentScript } from '#imports';
 import { mount, unmount } from 'svelte';
 import Overlay from './Overlay.svelte';
 import { executeDownload } from '../../src/lib/download-service';
-import { InvalidGlbError } from '../../src/lib/errors';
+import { DownloadJobController } from '../../src/lib/download-job';
 import { validateGlb } from '../../src/lib/glb-validator';
 import { logger } from '../../src/lib/logger';
 import { normalizeQuantizedPositionsInGlb } from '../../src/lib/meshy/gltf-normalizer';
@@ -11,13 +11,14 @@ import { extractMeshyModelName, extractMeshyThumbnailUrl } from '../../src/lib/m
 import { embedTextureInGlb, fetchTexturePng, glbHasEmbeddedTextures } from '../../src/lib/meshy/texture-embedder';
 import { BRIDGE_SOURCE, CONTENT_SOURCE, isMainWorldMessage } from '../../src/lib/messages';
 import { meshyProvider } from '../../src/lib/providers/meshy/meshy-provider';
-import type { DetectedModel, DownloaderSettings, ExportFormat, ModelMetadata, PageState } from '../../src/lib/types';
+import type { CapturedModelAsset, DetectedModel, DownloadJob, DownloaderSettings, ExportFormat, ModelMetadata, PageState } from '../../src/lib/types';
 
 let injected = false;
-let pendingDownload = false;
 let lastDownloadAt: number | undefined;
 let activeAbortController: AbortController | null = null;
 let currentMetadata: ModelMetadata | undefined;
+const jobs = new DownloadJobController();
+let queuedFormat: ExportFormat | undefined;
 
 const overlayConfig = {
   eventPrefix: 'model-downloader',
@@ -45,11 +46,14 @@ function getPageState(): PageState {
     hasActiveModel: current !== null,
     modelName: extractMeshyModelName(),
     previewUrl: extractMeshyThumbnailUrl(),
-    pendingDownload,
+    pendingDownload: jobs.current?.status === 'queued',
     lastGlbSize: current?.byteLength,
     lastDownloadAt,
     status: current ? 'ready' : 'detecting',
     metadata: currentMetadata,
+    activeModelKey: meshyModelStore.currentModelKey,
+    generation: meshyModelStore.currentGeneration,
+    job: jobs.current ?? undefined,
   };
 }
 
@@ -96,8 +100,8 @@ async function syncWithBackground() {
 }
 
 async function downloadModelWithTextureFallback(
-  glbBuffer: ArrayBuffer,
-  modelKey: string,
+  asset: CapturedModelAsset,
+  job: DownloadJob,
   targetFormat?: ExportFormat,
 ) {
   // Cancel previous download/processing if still active
@@ -108,23 +112,24 @@ async function downloadModelWithTextureFallback(
   activeAbortController = abortController;
 
   notifyOverlay('download-processing', {
-    generation: meshyModelStore.currentGeneration,
-    modelKey,
+    generation: job.generation,
+    modelKey: job.modelKey,
   });
+  jobs.transition(job, 'processing');
 
-  let downloadBufferValue = glbBuffer;
+  let downloadBufferValue = asset.buffer;
 
-  if (glbHasEmbeddedTextures(glbBuffer)) {
+  if (glbHasEmbeddedTextures(asset.buffer)) {
     logger.debug('Meshy', 'GLB already contains embedded textures');
   } else {
-    const textureUrl = meshyModelStore.getTextureUrl(modelKey);
-    if (textureUrl) {
-      logger.info('Meshy', 'Embedding external texture into GLB...', textureUrl);
+    const textureUrls = meshyModelStore.getTextureUrls(job.modelKey);
+    // The legacy single-texture fallback is only unambiguous for one material.
+    if (textureUrls.length === 1 && (currentMetadata?.materialCount ?? 0) <= 1) {
       try {
-        const texturePng = await fetchTexturePng(textureUrl);
-        if (abortController.signal.aborted) return;
+        const texturePng = await fetchTexturePng(textureUrls[0]);
+        if (abortController.signal.aborted || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
 
-        const embedded = embedTextureInGlb(glbBuffer, texturePng);
+        const embedded = embedTextureInGlb(asset.buffer, texturePng);
         if (embedded) {
           downloadBufferValue = embedded;
           logger.info('Meshy', 'Texture successfully embedded into GLB');
@@ -132,10 +137,12 @@ async function downloadModelWithTextureFallback(
       } catch (error) {
         logger.warn('Meshy', 'Texture embedding skipped due to error', error);
       }
+    } else if (textureUrls.length > 0) {
+      logger.warn('Meshy', 'External textures were preserved separately because material association is ambiguous.');
     }
   }
 
-  if (abortController.signal.aborted) return;
+  if (abortController.signal.aborted || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
 
   // Optional texture format transcoding if configured
   try {
@@ -143,14 +150,14 @@ async function downloadModelWithTextureFallback(
     if (settings?.textureFormat && settings.textureFormat !== 'default') {
       const { formatGlbTextures } = await import('../../src/lib/texture-format');
       if (!abortController.signal.aborted) {
-        downloadBufferValue = await formatGlbTextures(downloadBufferValue, settings.textureFormat);
+        downloadBufferValue = await formatGlbTextures(downloadBufferValue, settings.textureFormat, settings.textureQuality);
       }
     }
   } catch (error) {
     logger.warn('Meshy', 'Texture formatting failed, downloading original textures', error);
   }
 
-  if (abortController.signal.aborted) return;
+  if (abortController.signal.aborted || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
 
   let requestedFormat = targetFormat;
   if (!requestedFormat) {
@@ -166,6 +173,9 @@ async function downloadModelWithTextureFallback(
   const filename = meshyProvider.formatFilename(modelName);
 
   try {
+    jobs.transition(job, 'validating');
+    if (!jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
+    jobs.transition(job, 'downloading');
     const res = await executeDownload(downloadBufferValue, {
       filename,
       modelName,
@@ -175,17 +185,19 @@ async function downloadModelWithTextureFallback(
     });
 
     lastDownloadAt = Date.now();
+    jobs.transition(job, 'completed');
     notifyOverlay('download-started', {
       byteLength: res.size,
-      generation: meshyModelStore.currentGeneration,
-      modelKey,
+      generation: job.generation,
+      modelKey: job.modelKey,
     });
   } catch (error) {
+    jobs.transition(job, 'error', error instanceof Error ? error.message : String(error));
     logger.error('Meshy', 'Download failed', error);
     notifyOverlay('download-error', {
       error: error instanceof Error ? error.message : String(error),
-      generation: meshyModelStore.currentGeneration,
-      modelKey,
+      generation: job.generation,
+      modelKey: job.modelKey,
     });
   } finally {
     if (activeAbortController === abortController) {
@@ -196,20 +208,26 @@ async function downloadModelWithTextureFallback(
 
 function startModelDownload(targetFormat?: ExportFormat) {
   const current = meshyModelStore.current;
-  if (!current) {
-    pendingDownload = true;
+  const candidate = meshyModelStore.candidate;
+  if (!candidate) {
+    notifyOverlay('download-error', { error: 'No active Meshy model is detected yet.' });
+    return;
+  }
+  const job = jobs.begin('meshy', candidate.modelKey, candidate.generation, candidate.binaryUrl);
+  if (!job) return;
+  queuedFormat = targetFormat;
+  if (!current || current.modelKey !== job.modelKey || current.generation !== job.generation) {
     notifyOverlay('download-pending', {
-      generation: meshyModelStore.currentGeneration,
-      modelKey: meshyModelStore.currentModelKey,
+      generation: job.generation,
+      modelKey: job.modelKey,
     });
     return;
   }
 
-  pendingDownload = false;
-  void downloadModelWithTextureFallback(current.buffer, current.modelKey, targetFormat);
+  void downloadModelWithTextureFallback(current, job, targetFormat);
 }
 
-function handleGlbReady(buffer: ArrayBuffer, sourceUrl?: string) {
+function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now()) {
   const validation = validateGlb(buffer);
   if (!validation.valid) {
     logger.warn('Meshy', 'Ignored invalid GLB from worker', validation.reason);
@@ -218,9 +236,11 @@ function handleGlbReady(buffer: ArrayBuffer, sourceUrl?: string) {
 
   currentMetadata = validation.metadata;
   const normalizedBuffer = normalizeQuantizedPositionsInGlb(buffer);
-  const modelKey = getModelKey(sourceUrl) ?? meshyModelStore.currentModelKey ?? `meshy-${Date.now()}`;
-
-  const cached = meshyModelStore.setCurrentGlb(normalizedBuffer, modelKey, sourceUrl);
+  const cached = meshyModelStore.acceptDecodedGlb(normalizedBuffer, modelKey, sourceUrl, capturedAt);
+  if (!cached) {
+    logger.debug('Meshy', 'Cached late GLB without activating it', { modelKey });
+    return;
+  }
   logger.info('Meshy', `GLB ready for model ${modelKey} (${cached.byteLength} bytes)`);
 
   notifyOverlay('glb-ready', {
@@ -231,20 +251,23 @@ function handleGlbReady(buffer: ArrayBuffer, sourceUrl?: string) {
 
   void syncWithBackground();
 
-  if (pendingDownload) {
-    pendingDownload = false;
-    startModelDownload();
+  const job = jobs.current;
+  if (job?.status === 'queued' && jobs.isCurrent(job, cached.modelKey, cached.generation)) {
+    void downloadModelWithTextureFallback(cached, job, queuedFormat);
   }
 }
 
-function handleModelJsonDetected(url?: string) {
-  const modelKey = getModelKey(url);
-  const { isNew, generation } = meshyModelStore.setJsonModelKey(modelKey);
+function handleModelJsonDetected(url: string | undefined, explicitModelKey?: string, capturedAt = Date.now()) {
+  const modelKey = explicitModelKey ?? getModelKey(url);
+  if (!modelKey) return;
+  const { isNew, candidate } = meshyModelStore.activateCandidate({ provider: 'meshy', modelKey, jsonUrl: url, detectedAt: capturedAt });
+  const generation = candidate.generation;
 
   logger.debug('Meshy', 'model.json detected', { url, modelKey, isNew });
 
   if (isNew) {
-    pendingDownload = false;
+    jobs.cancel();
+    activeAbortController?.abort();
     currentMetadata = undefined;
     notifyOverlay('model-changed', {
       generation,
@@ -252,43 +275,34 @@ function handleModelJsonDetected(url?: string) {
     });
   }
 
-  if (!modelKey) return;
-
-  const cached = meshyModelStore.getCachedGlb(modelKey);
+  const cached = meshyModelStore.current;
   if (cached) {
-    const glb = meshyModelStore.setCurrentGlb(cached.buffer, modelKey);
     notifyOverlay('glb-ready', {
-      byteLength: glb.byteLength,
+      byteLength: cached.byteLength,
       generation,
       modelKey,
       cached: true,
     });
     void syncWithBackground();
 
-    if (pendingDownload) {
-      pendingDownload = false;
-      startModelDownload();
-    }
   }
 }
 
-function handleModelBinaryDetected(url?: string) {
-  const modelKey = getModelKey(url);
+function handleModelBinaryDetected(url: string | undefined, explicitModelKey?: string, capturedAt = Date.now()) {
+  const modelKey = explicitModelKey ?? getModelKey(url);
   if (!modelKey) return;
 
   logger.debug('Meshy', 'model.meshy binary URL detected', { modelKey, url });
 
-  const cached = meshyModelStore.getCachedGlb(modelKey);
-  if (cached && (!meshyModelStore.current || meshyModelStore.current.modelKey !== modelKey)) {
-    meshyModelStore.setCurrentGlb(cached.buffer, modelKey);
-    logger.debug('Meshy', 'Restored cached GLB from binary URL', { modelKey });
-    void syncWithBackground();
-  }
+  meshyModelStore.noteBinary(modelKey, url ?? modelKey, capturedAt);
+  void syncWithBackground();
 }
 
-function handleTextureDetected(url?: string) {
+function handleTextureDetected(url?: string, explicitModelKey?: string) {
   if (!url) return;
-  meshyModelStore.addTextureUrl(url);
+  const modelKey = explicitModelKey ?? getModelKey(url);
+  if (!modelKey || modelKey !== meshyModelStore.currentModelKey) return;
+  meshyModelStore.addTextureUrl(modelKey, url);
   logger.debug('Meshy', 'texture URL detected', url);
 }
 
@@ -300,6 +314,8 @@ function handleRouteChange(url?: string) {
 
   if (newModelId && currentKey && !currentKey.includes(newModelId)) {
     meshyModelStore.resetCurrentModel();
+    jobs.cancel();
+    activeAbortController?.abort();
     notifyOverlay('model-changed', {
       generation: meshyModelStore.currentGeneration,
     });
@@ -313,10 +329,10 @@ async function handleUserChoice(choice: 'yes' | 'no' | 'never') {
       startModelDownload();
       break;
     case 'no':
-      pendingDownload = false;
+      jobs.cancel('Cancelled by user.');
       break;
     case 'never':
-      pendingDownload = false;
+      jobs.cancel('Cancelled by user.');
       await browser.runtime.sendMessage({ type: 'set-never-show-again', value: true });
       notifyOverlay('preference-saved');
       break;
@@ -343,18 +359,18 @@ export default defineContentScript({
           handleRouteChange((data.payload as { url?: string })?.url);
           break;
         case 'model-binary-detected':
-          handleModelBinaryDetected((data.payload as { url?: string })?.url);
+          { const p = data.payload as { url?: string; modelKey?: string; capturedAt?: number }; handleModelBinaryDetected(p?.url, p?.modelKey, p?.capturedAt); }
           break;
         case 'model-json-detected':
-          handleModelJsonDetected((data.payload as { url?: string })?.url);
+          { const p = data.payload as { url?: string; modelKey?: string; capturedAt?: number }; handleModelJsonDetected(p?.url, p?.modelKey, p?.capturedAt); }
           break;
         case 'texture-detected':
-          handleTextureDetected((data.payload as { url?: string })?.url);
+          { const p = data.payload as { url?: string; modelKey?: string }; handleTextureDetected(p?.url, p?.modelKey); }
           break;
         case 'glb-ready': {
-          const payload = data.payload as { data?: ArrayBuffer; byteLength?: number; url?: string };
-          if (payload?.data instanceof ArrayBuffer) {
-            handleGlbReady(payload.data, payload.url);
+          const payload = data.payload as { data?: ArrayBuffer; byteLength?: number; url?: string; modelKey?: string; capturedAt?: number };
+          if (payload?.data instanceof ArrayBuffer && payload.modelKey) {
+            handleGlbReady(payload.data, payload.modelKey, payload.url, payload.capturedAt);
           }
           break;
         }
@@ -377,6 +393,9 @@ export default defineContentScript({
       },
       onRemove: (app) => {
         if (app) unmount(app);
+        activeAbortController?.abort();
+        jobs.reset();
+        meshyModelStore.dispose();
       },
     });
 
@@ -398,10 +417,8 @@ export default defineContentScript({
       if (message.type === 'download-last-mesh') {
         const current = meshyModelStore.current;
         if (!current) {
-          return Promise.resolve({
-            ok: false,
-            error: 'No decoded GLB is currently buffered. Open or select a model first.',
-          });
+          startModelDownload(message.exportFormat);
+          return Promise.resolve({ ok: true, queued: true });
         }
         startModelDownload(message.exportFormat);
         return Promise.resolve({ ok: true, byteLength: current.byteLength });

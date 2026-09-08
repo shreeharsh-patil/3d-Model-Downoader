@@ -18,19 +18,19 @@ export type MainWorldBridgeEvent =
     }
   | {
       type: 'model-json-detected';
-      payload: { url: string; pageUrl: string; capturedAt: number };
+      payload: { url: string; pageUrl: string; capturedAt: number; modelKey: string; detectionId: string };
     }
   | {
       type: 'model-binary-detected';
-      payload: { url: string; pageUrl: string; capturedAt: number };
+      payload: { url: string; pageUrl: string; capturedAt: number; modelKey: string; detectionId: string };
     }
   | {
       type: 'texture-detected';
-      payload: { url: string; pageUrl: string; capturedAt: number };
+      payload: { url: string; pageUrl: string; capturedAt: number; modelKey?: string };
     }
   | {
       type: 'glb-ready';
-      payload: { data: ArrayBuffer; byteLength: number; url?: string; capturedAt: number };
+      payload: { data: ArrayBuffer; byteLength: number; url?: string; capturedAt: number; modelKey: string; detectionId: string };
     }
   | {
       type: 'status-request';

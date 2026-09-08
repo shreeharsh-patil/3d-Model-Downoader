@@ -2,6 +2,7 @@ import { browser, createShadowRootUi, defineContentScript } from '#imports';
 import { mount, unmount } from 'svelte';
 import Overlay from './Overlay.svelte';
 import { executeDownload } from '../../src/lib/download-service';
+import { DownloadJobController } from '../../src/lib/download-job';
 import { validateGlb } from '../../src/lib/glb-validator';
 import { logger } from '../../src/lib/logger';
 import { BRIDGE_SOURCE, isMainWorldMessage } from '../../src/lib/messages';
@@ -27,6 +28,8 @@ let lastDownloadAt: number | undefined;
 let modelGeneration = 0;
 let pendingDownload = false;
 let resourceObserver: PerformanceObserver | undefined;
+const jobs = new DownloadJobController();
+const candidates = new Map<string, TripoActiveModel>();
 
 const overlayConfig = {
   eventPrefix: 'model-downloader',
@@ -168,10 +171,13 @@ function getPageState(): PageState {
     activeModelUrl: activeModel?.url,
     modelName: extractTripoModelName(),
     previewUrl: extractTripoThumbnailUrl(),
-    pendingDownload,
+    pendingDownload: jobs.current?.status === 'queued',
     lastDownloadAt,
     status: activeModel ? 'ready' : 'detecting',
     metadata: activeModel?.metadata,
+    activeModelKey: activeModel?.modelKey,
+    generation: modelGeneration,
+    job: jobs.current ?? undefined,
   };
 }
 
@@ -238,6 +244,7 @@ function handleTripoGlbUrlDetected(url: string, previewUrl?: string, capturedAt 
   }
 
   const modelKey = getModelKey(url) ?? url;
+  candidates.set(modelKey, { url, modelKey, detectedAt: capturedAt, previewUrl });
   modelGeneration += 1;
   activeModel = {
     url,
@@ -245,7 +252,7 @@ function handleTripoGlbUrlDetected(url: string, previewUrl?: string, capturedAt 
     detectedAt: capturedAt,
     previewUrl: previewUrl ?? extractTripoThumbnailUrl(),
   };
-  pendingDownload = false;
+  jobs.cancel();
 
   logger.info(getActiveProvider().label, `Active ${getActiveProvider().label} model updated`, { modelKey, url });
 

@@ -11,6 +11,49 @@ export type ModelStatus =
   | 'complete'
   | 'error';
 
+export type DownloadJobStatus =
+  | 'idle'
+  | 'detecting'
+  | 'ready'
+  | 'queued'
+  | 'processing'
+  | 'validating'
+  | 'downloading'
+  | 'completed'
+  | 'cancelled'
+  | 'error';
+
+export interface ModelCandidate {
+  provider: WebsiteId;
+  modelKey: string;
+  generation: number;
+  jsonUrl?: string;
+  binaryUrl?: string;
+  detectedAt: number;
+}
+
+export interface CapturedModelAsset {
+  provider: WebsiteId;
+  modelKey: string;
+  generation: number;
+  capturedAt: number;
+  sourceUrl?: string;
+  bufferStatus: 'pending' | 'ready' | 'invalid' | 'released';
+  buffer: ArrayBuffer;
+  byteLength: number;
+}
+
+export interface DownloadJob {
+  id: string;
+  provider: WebsiteId;
+  modelKey: string;
+  generation: number;
+  sourceUrl?: string;
+  startedAt: number;
+  status: DownloadJobStatus;
+  error?: string;
+}
+
 export interface ModelMetadata {
   meshCount?: number;
   primitiveCount?: number;
@@ -67,6 +110,7 @@ export interface DownloadHistoryItem {
 export interface DownloaderSettings {
   autoAskToDownload: boolean;
   textureFormat: TextureFormat;
+  textureQuality: number;
   exportFormat: ExportFormat;
   showCompletionNotification: boolean;
   debugLogging: boolean;
@@ -93,6 +137,9 @@ export interface PageState {
   lastDownloadAt?: number;
   status: ModelStatus;
   metadata?: ModelMetadata;
+  activeModelKey?: string;
+  generation?: number;
+  job?: DownloadJob;
 }
 
 export interface TabState {

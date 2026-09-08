@@ -1,98 +1,138 @@
-export function getModelKey(url: string | undefined): string | undefined {
+import { LruModelCache, type LruCacheLimits } from '../lru-model-cache';
+import type { CapturedModelAsset, ModelCandidate } from '../types';
+
+/** Removes query/fragment secrets while retaining the stable asset directory. */
+export function getModelKey(url: string | undefined, baseUrl = 'https://www.meshy.ai/'): string | undefined {
   if (!url) return undefined;
   try {
-    const parsed = new URL(url, window.location.href);
-    const dir = parsed.pathname.replace(/\/[^/]+$/, '');
-    return `${parsed.origin}${dir}`;
+    const parsed = new URL(url, baseUrl);
+    const directory = parsed.pathname.replace(/\/[^/]+$/, '');
+    return directory && directory !== '/' ? `${parsed.origin}${directory}` : undefined;
   } catch {
-    const noQuery = url.split('?')[0];
-    return noQuery.replace(/\/[^/]+$/, '');
+    return undefined;
   }
 }
 
-export interface CachedGlb {
-  buffer: ArrayBuffer;
-  byteLength: number;
-  modelKey: string;
-  sourceUrl?: string;
-  generation: number;
-}
+type CachedAsset = Omit<CapturedModelAsset, 'generation' | 'bufferStatus'>;
 
 export class MeshyModelStore {
-  private currentGlb: CachedGlb | null = null;
-  private currentJsonModelKey: string | undefined;
-  private glbCache = new Map<string, { buffer: ArrayBuffer; byteLength: number }>();
-  private textureUrls = new Map<string, string[]>();
-  private lastTextureUrl: string | undefined;
+  private currentGlb: CapturedModelAsset | null = null;
+  private activeCandidate: ModelCandidate | null = null;
+  private readonly glbCache: LruModelCache<CachedAsset>;
+  private readonly textureUrls = new Map<string, Set<string>>();
   private generation = 0;
 
-  get current(): CachedGlb | null {
-    return this.currentGlb;
+  constructor(cacheLimits?: LruCacheLimits) {
+    this.glbCache = new LruModelCache(cacheLimits);
+  }
+
+  get current(): CapturedModelAsset | null {
+    return this.isCurrentAsset(this.currentGlb) ? this.currentGlb : null;
+  }
+
+  get candidate(): ModelCandidate | null {
+    return this.activeCandidate;
   }
 
   get currentModelKey(): string | undefined {
-    return this.currentJsonModelKey;
+    return this.activeCandidate?.modelKey;
   }
 
   get currentGeneration(): number {
     return this.generation;
   }
 
-  bumpGeneration(): number {
-    this.generation += 1;
-    return this.generation;
+  get cacheSize(): number {
+    return this.glbCache.size;
   }
 
-  resetCurrentModel(): void {
-    this.currentGlb = null;
-    this.currentJsonModelKey = undefined;
-    this.bumpGeneration();
+  get cacheByteLength(): number {
+    return this.glbCache.byteLength;
   }
 
-  setJsonModelKey(key?: string): { isNew: boolean; generation: number } {
-    const isNew = key !== undefined && key !== this.currentJsonModelKey;
+  activateCandidate(input: Omit<ModelCandidate, 'generation'>): { isNew: boolean; candidate: ModelCandidate } {
+    const isNew = input.modelKey !== this.activeCandidate?.modelKey;
     if (isNew) {
-      this.bumpGeneration();
-      this.currentJsonModelKey = key;
+      this.generation += 1;
+      this.currentGlb = null;
     }
-    return { isNew, generation: this.generation };
+    const candidate: ModelCandidate = {
+      ...input,
+      generation: this.generation,
+      jsonUrl: input.jsonUrl ?? (isNew ? undefined : this.activeCandidate?.jsonUrl),
+      binaryUrl: input.binaryUrl ?? (isNew ? undefined : this.activeCandidate?.binaryUrl),
+    };
+    this.activeCandidate = candidate;
+
+    const cached = this.glbCache.get(candidate.modelKey);
+    if (cached) {
+      this.currentGlb = { ...cached, generation: candidate.generation, bufferStatus: 'ready' };
+    }
+    return { isNew, candidate };
   }
 
-  getCachedGlb(modelKey: string): { buffer: ArrayBuffer; byteLength: number } | undefined {
-    return this.glbCache.get(modelKey);
+  noteBinary(modelKey: string, binaryUrl: string, detectedAt = Date.now()): ModelCandidate {
+    if (this.activeCandidate?.modelKey !== modelKey) {
+      return this.activateCandidate({ provider: 'meshy', modelKey, binaryUrl, detectedAt }).candidate;
+    }
+    this.activeCandidate = { ...this.activeCandidate, binaryUrl, detectedAt };
+    return this.activeCandidate;
   }
 
-  setCurrentGlb(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string): CachedGlb {
-    const cachedGlb: CachedGlb = {
+  /** Cache any correlated result, but activate it only when identity still matches. */
+  acceptDecodedGlb(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now()): CapturedModelAsset | null {
+    const cached: CachedAsset = {
+      provider: 'meshy',
+      modelKey,
+      capturedAt,
+      sourceUrl,
       buffer,
       byteLength: buffer.byteLength,
-      modelKey,
-      sourceUrl,
-      generation: this.generation,
     };
-    this.currentGlb = cachedGlb;
-    this.glbCache.set(modelKey, { buffer: buffer.slice(0), byteLength: buffer.byteLength });
-    return cachedGlb;
+    this.glbCache.set(modelKey, cached);
+    if (this.activeCandidate?.modelKey !== modelKey) return null;
+
+    this.currentGlb = {
+      ...cached,
+      generation: this.activeCandidate.generation,
+      bufferStatus: 'ready',
+    };
+    return this.currentGlb;
   }
 
-  addTextureUrl(url: string): void {
-    this.lastTextureUrl = url;
-    const modelKey = getModelKey(url);
-    if (modelKey) {
-      const list = this.textureUrls.get(modelKey) ?? [];
-      if (!list.includes(url)) {
-        list.push(url);
-        this.textureUrls.set(modelKey, list);
-      }
-    }
+  isCurrentAsset(asset: CapturedModelAsset | null): asset is CapturedModelAsset {
+    return Boolean(asset && this.activeCandidate &&
+      asset.modelKey === this.activeCandidate.modelKey &&
+      asset.generation === this.activeCandidate.generation &&
+      asset.bufferStatus === 'ready');
+  }
+
+  addTextureUrl(modelKey: string, url: string): void {
+    const list = this.textureUrls.get(modelKey) ?? new Set<string>();
+    list.add(url);
+    this.textureUrls.set(modelKey, list);
+  }
+
+  getTextureUrls(modelKey: string): string[] {
+    return [...(this.textureUrls.get(modelKey) ?? [])];
   }
 
   getTextureUrl(modelKey?: string): string | undefined {
-    if (modelKey) {
-      const list = this.textureUrls.get(modelKey);
-      if (list && list.length > 0) return list[0];
-    }
-    return this.lastTextureUrl;
+    if (!modelKey) return undefined;
+    const urls = this.getTextureUrls(modelKey);
+    return urls.length > 0 ? urls[0] : undefined;
+  }
+
+  resetCurrentModel(): void {
+    this.generation += 1;
+    this.currentGlb = null;
+    this.activeCandidate = null;
+  }
+
+  dispose(): void {
+    this.resetCurrentModel();
+    this.glbCache.clear();
+    this.textureUrls.clear();
   }
 }
 

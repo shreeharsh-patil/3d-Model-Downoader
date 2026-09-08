@@ -8,6 +8,7 @@ const MAX_HISTORY_ITEMS = 20;
 export const DEFAULT_SETTINGS: DownloaderSettings = {
   autoAskToDownload: true,
   textureFormat: 'default',
+  textureQuality: 90,
   exportFormat: 'glb',
   showCompletionNotification: false,
   debugLogging: false,

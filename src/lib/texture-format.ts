@@ -13,7 +13,7 @@ const TARGET_MIME_TYPES: Record<Exclude<TextureFormat, 'default'>, string> = {
   jpg: 'image/jpeg',
 };
 
-function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string) {
+function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: number) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
@@ -24,7 +24,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string) {
         resolve(blob);
       },
       mimeType,
-      mimeType === 'image/png' ? undefined : 0.92,
+      mimeType === 'image/png' ? undefined : (quality !== undefined ? quality / 100 : 0.92),
     );
   });
 }
@@ -33,6 +33,7 @@ async function transcodeImage(
   image: Uint8Array<ArrayBuffer>,
   sourceMimeType: string,
   targetMimeType: string,
+  quality?: number,
 ) {
   if (sourceMimeType === targetMimeType) return image;
 
@@ -55,7 +56,7 @@ async function transcodeImage(
     }
 
     context.drawImage(imageElement, 0, 0);
-    const blob = await canvasToBlob(canvas, targetMimeType);
+    const blob = await canvasToBlob(canvas, targetMimeType, quality);
     return new Uint8Array(await blob.arrayBuffer());
   } finally {
     URL.revokeObjectURL(imageUrl);
@@ -66,7 +67,7 @@ async function transcodeImage(
  * Re-encodes every embedded GLB texture with browser image codecs, then uses
  * glTF-Transform to replace texture payloads and update format extensions.
  */
-export async function formatGlbTextures(buffer: ArrayBuffer, format: TextureFormat) {
+export async function formatGlbTextures(buffer: ArrayBuffer, format: TextureFormat, quality?: number) {
   if (format === 'default') return buffer;
 
   const io = new WebIO().registerExtensions(ALL_EXTENSIONS);
@@ -78,7 +79,7 @@ export async function formatGlbTextures(buffer: ArrayBuffer, format: TextureForm
     const image = texture.getImage();
     if (!image) continue;
 
-    const convertedImage = await transcodeImage(image, texture.getMimeType(), targetMimeType);
+    const convertedImage = await transcodeImage(image, texture.getMimeType(), targetMimeType, quality);
     texture
       .setImage(convertedImage)
       .setMimeType(targetMimeType)
