@@ -57,8 +57,21 @@ class TabStateManager {
 
     current.model = model;
     current.modelId = model.id;
+    current.revision = revision;
     current.status = model.status;
     current.error = model.error;
+    current.updatedAt = Date.now();
+    return current;
+  }
+
+  clearModel(tabId: number, revision: number, status: ModelStatus = 'detecting'): TabModelState | null {
+    const current = this.tabStates.get(tabId);
+    if (!current || revision < current.revision) return null;
+    current.model = undefined;
+    current.modelId = undefined;
+    current.revision = revision;
+    current.status = status;
+    current.error = undefined;
     current.updatedAt = Date.now();
     return current;
   }

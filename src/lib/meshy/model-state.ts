@@ -72,11 +72,8 @@ export class MeshyModelStore {
   }
 
   noteBinary(modelKey: string, binaryUrl: string, detectedAt = Date.now()): ModelCandidate {
-    if (!this.activeCandidate) {
+    if (!this.activeCandidate || this.activeCandidate.modelKey !== modelKey) {
       return this.activateCandidate({ provider: 'meshy', modelKey, binaryUrl, detectedAt }).candidate;
-    }
-    if (this.activeCandidate.modelKey !== modelKey) {
-      return { provider: 'meshy', modelKey, generation: this.generation, binaryUrl, detectedAt };
     }
     this.activeCandidate = { ...this.activeCandidate, binaryUrl, detectedAt };
     return this.activeCandidate;

@@ -104,4 +104,23 @@ describe('Tab State Isolation & Stale Protection', () => {
     expect(tabStateManager.get(7)?.model).toBeUndefined();
     expect(tabStateManager.get(7)?.revision).toBe(tab.revision + 1);
   });
+
+  it('can clear a detected model without leaving stale popup state', () => {
+    const state = tabStateManager.getOrCreate(8, 'https://meshy.ai/workspace');
+    const model: DetectedModel = {
+      id: 'model1',
+      provider: 'meshy',
+      pageUrl: 'https://meshy.ai/workspace',
+      format: 'glb',
+      detectedAt: Date.now(),
+      status: 'ready',
+    };
+    tabStateManager.updateModel(8, model, state.revision);
+
+    const cleared = tabStateManager.clearModel(8, state.revision, 'detecting');
+
+    expect(cleared?.model).toBeUndefined();
+    expect(cleared?.modelId).toBeUndefined();
+    expect(cleared?.status).toBe('detecting');
+  });
 });

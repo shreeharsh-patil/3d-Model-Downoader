@@ -151,9 +151,18 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'tab-model-updated') {
-      const { tabId, model, revision } = message.payload;
-      if (tabId && model) {
-        tabStateManager.updateModel(tabId, model, revision);
+      const { model, revision, pageUrl, status } = message.payload;
+      const tabId = sender.tab?.id ?? message.payload.tabId;
+      if (tabId) {
+        const current = tabStateManager.getOrCreate(tabId, sender.tab?.url ?? pageUrl);
+        const effectiveRevision = Math.max(current.revision, revision);
+        if (model) {
+          if (!current.model || model.detectedAt >= current.model.detectedAt) {
+            tabStateManager.updateModel(tabId, model, effectiveRevision);
+          }
+        } else {
+          tabStateManager.clearModel(tabId, effectiveRevision, status);
+        }
       }
       return Promise.resolve({ ok: true });
     }

@@ -328,7 +328,7 @@
           <span class="chip-dot meshy"></span>
           Meshy
         </button>
-        <button class="workspace-chip" on:click={() => openWorkspace('https://www.tripo3d.ai/app')}>
+        <button class="workspace-chip" on:click={() => openWorkspace('https://studio.tripo3d.ai/')}>
           <span class="chip-dot tripo"></span>
           Tripo3D
         </button>

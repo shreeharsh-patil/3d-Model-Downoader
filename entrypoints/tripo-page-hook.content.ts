@@ -3,6 +3,7 @@ import { installTripoMainWorldHook } from '../src/lib/tripo-main-world-hook';
 
 export default defineContentScript({
   matches: [
+    'https://studio.tripo3d.ai/*',
     'https://*.tripo3d.ai/*',
     'https://tripo3d.ai/*',
     'https://*.tripo3d.com/*',

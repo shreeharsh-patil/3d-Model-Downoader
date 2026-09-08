@@ -195,22 +195,19 @@ async function syncWithBackground() {
     : undefined;
 
   try {
-    const tabState = (await browser.runtime.sendMessage({ type: 'get-active-tab-state' })) as { tabId?: number };
-    if (tabState?.tabId) {
-      await browser.runtime.sendMessage({
-        type: 'tab-model-updated',
-        payload: {
-          tabId: tabState.tabId,
-          provider: provider.id,
-          pageUrl: window.location.href,
-          modelId: activeModel?.modelKey,
-          model: detectedModel,
-          revision: tripoModelStore.generation,
-          updatedAt: Date.now(),
-          status: activeModel ? 'ready' : 'detecting',
-        },
-      });
-    }
+    await browser.runtime.sendMessage({
+      type: 'tab-model-updated',
+      payload: {
+        tabId: 0,
+        provider: provider.id,
+        pageUrl: window.location.href,
+        modelId: activeModel?.modelKey,
+        model: detectedModel,
+        revision: tripoModelStore.generation,
+        updatedAt: Date.now(),
+        status: activeModel ? 'ready' : 'detecting',
+      },
+    });
   } catch {
     // ignore
   }
@@ -376,6 +373,7 @@ async function downloadActiveModel(targetFormat?: ExportFormat) {
 
 export default defineContentScript({
   matches: [
+    'https://studio.tripo3d.ai/*',
     'https://*.tripo3d.ai/*',
     'https://tripo3d.ai/*',
     'https://*.tripo3d.com/*',

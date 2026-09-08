@@ -50,6 +50,7 @@ export default defineConfig({
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",
     },
     host_permissions: [
+      'https://studio.tripo3d.ai/*',
       'https://*.meshy.ai/*',
       'https://meshy.ai/*',
       'https://*.tripo3d.ai/*',

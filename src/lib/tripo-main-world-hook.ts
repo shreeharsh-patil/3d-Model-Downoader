@@ -11,32 +11,35 @@ function getUrlString(input: unknown): string | undefined {
   return undefined;
 }
 
-function findGlbUrlsInObject(obj: unknown, found: string[] = []): string[] {
+const MODEL_URL_MARKER = /(?:\.glb(?:[?#]|$)|meshopt|\.gltf(?:[?#]|$)|file\.osgjs(?:[?#]|$)|model_file\.bin(?:[?#]|$))/i;
+
+function resolveAssetUrl(value: string, baseUrl: string): string | undefined {
+  try {
+    const resolved = new URL(value, baseUrl);
+    return /^https?:$/.test(resolved.protocol) ? resolved.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function findGlbUrlsInObject(obj: unknown, baseUrl: string, found: string[] = []): string[] {
   if (!obj || typeof obj !== 'object') return found;
 
   if (Array.isArray(obj)) {
     for (const item of obj) {
-      findGlbUrlsInObject(item, found);
+      findGlbUrlsInObject(item, baseUrl, found);
     }
     return found;
   }
 
   for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
     if (typeof val === 'string') {
-      const lower = val.toLowerCase();
-      if (
-        lower.includes('.glb') ||
-        lower.includes('meshopt') ||
-        lower.includes('.gltf') ||
-        lower.includes('file.osgjs') ||
-        lower.includes('model_file.bin')
-      ) {
-        if (val.startsWith('http://') || val.startsWith('https://')) {
-          found.push(val);
-        }
+      if (MODEL_URL_MARKER.test(val)) {
+        const resolved = resolveAssetUrl(val, baseUrl);
+        if (resolved && !found.includes(resolved)) found.push(resolved);
       }
     } else if (typeof val === 'object' && val !== null) {
-      findGlbUrlsInObject(val, found);
+      findGlbUrlsInObject(val, baseUrl, found);
     }
   }
 
@@ -101,6 +104,22 @@ export function installTripoMainWorldHook() {
     }
   }
 
+  function inspectApiPayload(payload: unknown, responseUrl = window.location.href) {
+    const glbUrls = findGlbUrlsInObject(payload, responseUrl);
+    const thumbUrls = findThumbnailsInObject(payload);
+    const previewUrl = thumbUrls[0];
+    const routeHint = (findProvider(window.location.href) ?? tripoProvider).extractModelId(window.location.href)?.toLowerCase();
+    const selectedUrls = glbUrls.length === 1
+      ? glbUrls
+      : routeHint
+        ? glbUrls.filter((url) => url.toLowerCase().includes(routeHint))
+        : [];
+    for (const glbUrl of selectedUrls) handleDetectedUrl(glbUrl, previewUrl, 'api-response');
+    if (previewUrl && selectedUrls.length === 0) {
+      postToContent('tripo-preview-detected', { previewUrl, capturedAt: Date.now() });
+    }
+  }
+
   // SPA route navigation tracking
   const nativePushState = history.pushState;
   history.pushState = function (...args) {
@@ -130,26 +149,18 @@ export function installTripoMainWorldHook() {
 
     const promise = nativeFetch.apply(this, [input, init]);
 
-    // Inspect API responses that might contain the model URL or thumbnail
-    if (urlStr && (urlStr.includes('/api/') || urlStr.includes('/task/') || urlStr.includes('/model/') || urlStr.includes('/draft/'))) {
-      promise
-        .then((res) => res.clone().json())
-        .then((json) => {
-          const glbUrls = findGlbUrlsInObject(json);
-          const thumbUrls = findThumbnailsInObject(json);
-          const previewUrl = thumbUrls[0];
-          for (const glbUrl of glbUrls) {
-            handleDetectedUrl(glbUrl, previewUrl, 'api-response');
-          }
-          if (previewUrl && glbUrls.length === 0) {
-            postToContent('tripo-preview-detected', {
-              previewUrl,
-              capturedAt: Date.now(),
-            });
-          }
-        })
-        .catch(() => {});
-    }
+    // Studio API routes change over time. Inspect JSON by response content type
+    // instead of relying on a short allowlist of URL path fragments.
+    promise
+      .then((res) => {
+        const contentType = res.headers.get('content-type')?.toLowerCase() ?? '';
+        if (!contentType.includes('json')) return undefined;
+        return res.clone().json().then((json) => ({ json, responseUrl: res.url || urlStr || window.location.href }));
+      })
+      .then((result) => {
+        if (result) inspectApiPayload(result.json, result.responseUrl);
+      })
+      .catch(() => {});
 
     return promise;
   };
@@ -162,34 +173,20 @@ export function installTripoMainWorldHook() {
       handleDetectedUrl(urlStr);
     }
 
-    if (urlStr && (urlStr.includes('/api/') || urlStr.includes('/task/') || urlStr.includes('/model/') || urlStr.includes('/draft/'))) {
-      this.addEventListener('load', () => {
-        try {
-          let json: unknown;
-          if (this.responseType === '' || this.responseType === 'text') {
-            json = JSON.parse(this.responseText);
-          } else if (this.responseType === 'json' && this.response) {
-            json = this.response;
-          }
-          if (json) {
-            const glbUrls = findGlbUrlsInObject(json);
-            const thumbUrls = findThumbnailsInObject(json);
-            const previewUrl = thumbUrls[0];
-            for (const glbUrl of glbUrls) {
-              handleDetectedUrl(glbUrl, previewUrl, 'api-response');
-            }
-            if (previewUrl && glbUrls.length === 0) {
-              postToContent('tripo-preview-detected', {
-                previewUrl,
-                capturedAt: Date.now(),
-              });
-            }
-          }
-        } catch {
-          // ignore
+    this.addEventListener('load', () => {
+      try {
+        const contentType = this.getResponseHeader('content-type')?.toLowerCase() ?? '';
+        let json: unknown;
+        if (this.responseType === 'json' && this.response) {
+          json = this.response;
+        } else if ((this.responseType === '' || this.responseType === 'text') && contentType.includes('json')) {
+          json = JSON.parse(this.responseText);
         }
-      });
-    }
+        if (json) inspectApiPayload(json, this.responseURL || urlStr || window.location.href);
+      } catch {
+        // ignore non-JSON, inaccessible, and malformed responses
+      }
+    });
 
     return (nativeXhrOpen as Function).apply(this, [method, url, ...rest]);
   };

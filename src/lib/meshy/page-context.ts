@@ -34,6 +34,9 @@ export function extractMeshyModelName(): string | undefined {
 
 export function extractMeshyThumbnailUrl(): string | undefined {
   try {
+    const routeModelId = meshyProvider.extractModelId(window.location.href);
+    const correlationHint = routeModelId && !routeModelId.includes('://') ? routeModelId.toLowerCase() : undefined;
+
     // 1. Look for rendered model preview or thumbnail images in the DOM
     const imgSelectors = [
       'img[src*="thumbnail"]',
@@ -49,13 +52,16 @@ export function extractMeshyThumbnailUrl(): string | undefined {
     for (const selector of imgSelectors) {
       const img = document.querySelector(selector) as HTMLImageElement | null;
       if (img?.src && img.src.startsWith('http') && !img.src.includes('avatar') && !img.src.includes('logo')) {
+        const selectorIdentifiesActivePreview = selector.includes('model-preview') || selector.includes('model-card.active');
+        if (correlationHint && !selectorIdentifiesActivePreview && !img.src.toLowerCase().includes(correlationHint)) continue;
         return img.src;
       }
     }
 
     // 2. Check OpenGraph image meta tag
     const ogImage = document.querySelector('meta[property="og:image"]')?.getAttribute('content');
-    if (ogImage && ogImage.startsWith('http') && !ogImage.includes('default-og')) {
+    if (ogImage && ogImage.startsWith('http') && !ogImage.includes('default-og') &&
+      (!correlationHint || ogImage.toLowerCase().includes(correlationHint))) {
       return ogImage;
     }
 

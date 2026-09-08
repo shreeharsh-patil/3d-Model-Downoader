@@ -25,6 +25,28 @@ const overlayConfig = {
   fileFormat: 'GLB',
 };
 
+function getPageModelHint(url = window.location.href): string | undefined {
+  try {
+    const parsed = new URL(url, window.location.href);
+    for (const key of ['taskId', 'task_id', 'modelId', 'model_id', 'id']) {
+      const value = parsed.searchParams.get(key);
+      if (value && /^[a-z0-9_-]{8,}$/i.test(value)) return value.toLowerCase();
+    }
+    const routeHint = meshyProvider.extractModelId(parsed.href);
+    if (routeHint && !routeHint.includes('://')) return routeHint.toLowerCase();
+    const pathOrHash = `${parsed.pathname}/${parsed.hash}`;
+    const id = pathOrHash.match(/(?:^|[/=])([a-z0-9_-]{16,})(?:[/&?#]|$)/i)?.[1];
+    return id?.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function isCorrelatedWithPage(modelKey: string, url = window.location.href): boolean {
+  const hint = getPageModelHint(url);
+  return Boolean(hint && modelKey.toLowerCase().includes(hint));
+}
+
 function notifyOverlay(type: string, detail?: unknown) {
   window.dispatchEvent(
     new CustomEvent(`${overlayConfig.eventPrefix}:${type}`, {
@@ -42,7 +64,7 @@ function getPageState(): PageState {
   return {
     injected,
     hasDecodedGlb: current !== null,
-    hasActiveModel: current !== null,
+    hasActiveModel: meshyModelStore.candidate !== null,
     modelName: extractMeshyModelName(),
     previewUrl: extractMeshyThumbnailUrl(),
     pendingDownload: jobs.current?.status === 'queued',
@@ -77,22 +99,19 @@ async function syncWithBackground() {
     : undefined;
 
   try {
-    const tabState = (await browser.runtime.sendMessage({ type: 'get-active-tab-state' })) as { tabId?: number };
-    if (tabState?.tabId) {
-      await browser.runtime.sendMessage({
-        type: 'tab-model-updated',
-        payload: {
-          tabId: tabState.tabId,
-          provider: 'meshy',
-          pageUrl: window.location.href,
-          modelId: current?.modelKey,
-          model: detectedModel,
-          revision: meshyModelStore.currentGeneration,
-          updatedAt: Date.now(),
-          status: current ? 'ready' : 'detecting',
-        },
-      });
-    }
+    await browser.runtime.sendMessage({
+      type: 'tab-model-updated',
+      payload: {
+        tabId: 0,
+        provider: 'meshy',
+        pageUrl: window.location.href,
+        modelId: current?.modelKey,
+        model: detectedModel,
+        revision: meshyModelStore.currentGeneration,
+        updatedAt: Date.now(),
+        status: current ? 'ready' : 'detecting',
+      },
+    });
   } catch {
     // ignore
   }
@@ -205,28 +224,33 @@ async function downloadModelWithTextureFallback(
   }
 }
 
-function startModelDownload(targetFormat?: ExportFormat) {
+function startModelDownload(targetFormat?: ExportFormat): { ok: boolean; queued?: boolean; byteLength?: number; error?: string } {
   const current = meshyModelStore.current;
   const candidate = meshyModelStore.candidate;
   if (!candidate) {
     notifyOverlay('download-error', { error: 'No active Meshy model is detected yet.' });
-    return;
+    return { ok: false, error: 'No active Meshy model is detected yet.' };
   }
   const job = jobs.begin('meshy', candidate.modelKey, candidate.generation, candidate.binaryUrl);
-  if (!job) return;
+  if (!job) return { ok: false, error: 'A model download is already in progress.' };
   queuedFormat = targetFormat;
   if (!current || current.modelKey !== job.modelKey || current.generation !== job.generation) {
     notifyOverlay('download-pending', {
       generation: job.generation,
       modelKey: job.modelKey,
     });
-    return;
+    return { ok: true, queued: true };
   }
 
   void downloadModelWithTextureFallback(current, job, targetFormat);
+  return { ok: true, byteLength: current.byteLength };
 }
 
 function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now()) {
+  if (!isCorrelatedWithPage(modelKey)) {
+    logger.debug('Meshy', 'Ignored decoded GLB that is not correlated with the selected route.', { modelKey });
+    return;
+  }
   const validation = validateGlb(buffer);
   if (!validation.valid) {
     logger.warn('Meshy', 'Ignored invalid GLB from worker', validation.reason);
@@ -263,7 +287,7 @@ function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: strin
 
 function handleModelJsonDetected(url: string | undefined, explicitModelKey?: string, capturedAt = Date.now()) {
   const modelKey = explicitModelKey ?? getModelKey(url);
-  if (!modelKey) return;
+  if (!modelKey || !isCorrelatedWithPage(modelKey)) return;
   const { isNew, candidate } = meshyModelStore.activateCandidate({ provider: 'meshy', modelKey, jsonUrl: url, detectedAt: capturedAt });
   const generation = candidate.generation;
 
@@ -293,7 +317,7 @@ function handleModelJsonDetected(url: string | undefined, explicitModelKey?: str
 
 function handleModelBinaryDetected(url: string | undefined, explicitModelKey?: string, capturedAt = Date.now()) {
   const modelKey = explicitModelKey ?? getModelKey(url);
-  if (!modelKey) return;
+  if (!modelKey || !isCorrelatedWithPage(modelKey)) return;
 
   logger.debug('Meshy', 'model.meshy binary URL detected', { modelKey, url });
 
@@ -315,7 +339,7 @@ function handleRouteChange(url?: string) {
   const newModelId = meshyProvider.extractModelId(url || window.location.href);
   const currentKey = meshyModelStore.currentModelKey;
 
-  if (newModelId && currentKey && !currentKey.includes(newModelId)) {
+  if (currentKey && (!newModelId || newModelId.includes('://') || !currentKey.toLowerCase().includes(newModelId.toLowerCase()))) {
     meshyModelStore.resetCurrentModel();
     jobs.cancel();
     activeAbortController?.abort();
@@ -343,7 +367,7 @@ async function handleUserChoice(choice: 'yes' | 'no' | 'never') {
 }
 
 export default defineContentScript({
-  matches: ['https://www.meshy.ai/*'],
+  matches: ['https://meshy.ai/*', 'https://*.meshy.ai/*'],
   runAt: 'document_start',
   cssInjectionMode: 'ui',
   async main(ctx) {
@@ -418,13 +442,7 @@ export default defineContentScript({
       }
 
       if (message.type === 'download-last-mesh') {
-        const current = meshyModelStore.current;
-        if (!current) {
-          startModelDownload(message.exportFormat);
-          return Promise.resolve({ ok: true, queued: true });
-        }
-        startModelDownload(message.exportFormat);
-        return Promise.resolve({ ok: true, byteLength: current.byteLength });
+        return Promise.resolve(startModelDownload(message.exportFormat));
       }
     });
   },
