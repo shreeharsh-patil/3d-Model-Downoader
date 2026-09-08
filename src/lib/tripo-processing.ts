@@ -121,7 +121,28 @@ export async function processTripoGlb(
     throw new NetworkError(`HTTP ${response.status} ${response.statusText}`);
   }
 
-  const sourceBuffer = await response.arrayBuffer();
+  const rawBuffer = await response.arrayBuffer();
+  let sourceBuffer = rawBuffer;
+
+  // If payload is a ZIP archive (PK 0x50, 0x4B), extract the embedded .glb
+  const uint8 = new Uint8Array(rawBuffer);
+  if (uint8.length >= 4 && uint8[0] === 0x50 && uint8[1] === 0x4b) {
+    try {
+      const { unzipSync } = await import('fflate');
+      const unzipped = unzipSync(uint8);
+      const glbEntry = Object.keys(unzipped).find((name) => name.toLowerCase().endsWith('.glb'));
+      if (glbEntry && unzipped[glbEntry]) {
+        const fileData = unzipped[glbEntry];
+        const copy = new Uint8Array(fileData.byteLength);
+        copy.set(fileData);
+        sourceBuffer = copy.buffer;
+        logger.info(provider.label, `Extracted ${glbEntry} from ZIP archive (${sourceBuffer.byteLength} bytes)`);
+      }
+    } catch (err) {
+      logger.warn(provider.label, 'Failed to extract GLB from ZIP package', err);
+    }
+  }
+
   const sourceSummary = parseGlbSummary(sourceBuffer);
 
   const hasMeshopt =

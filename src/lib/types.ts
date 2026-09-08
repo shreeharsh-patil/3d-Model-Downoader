@@ -1,4 +1,4 @@
-export type WebsiteId = 'meshy' | 'tripo' | 'luma' | 'rodin';
+export type WebsiteId = 'meshy' | 'tripo' | 'luma' | 'rodin' | 'sketchfab' | 'polypizza' | 'polyhaven';
 
 export type ModelFormat = 'glb' | 'gltf';
 
