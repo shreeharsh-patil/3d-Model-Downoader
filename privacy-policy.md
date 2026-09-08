@@ -1,10 +1,10 @@
-# 3D Model Downloader Privacy Policy
+# PolyFetch 3D Privacy Policy
 
 _Last updated: September 2026_
 
-3D Model Downloader is an independent browser extension that assists users in detecting and downloading legitimately accessible 3D models generated on supported web-based 3D generation and repository platforms (Meshy, Tripo3D, Luma AI, Rodin / Hyper3D, Sketchfab, Poly Pizza, and Poly Haven).
+PolyFetch 3D is an independent browser extension that assists users in detecting and downloading legitimately accessible 3D models generated on supported web-based 3D generation and repository platforms (Meshy, Tripo3D, Luma AI, Rodin / Hyper3D, Sketchfab, Poly Pizza, and Poly Haven).
 
-3D Model Downloader is an independent project and is not affiliated with, endorsed by, or connected to Meshy.ai, Tripo3D.ai, Luma AI, Deemos / Rodin, Sketchfab, Poly Pizza, or Poly Haven.
+PolyFetch 3D is an independent project and is not affiliated with, endorsed by, or connected to Meshy.ai, Tripo3D.ai, Luma AI, Deemos / Rodin, Sketchfab, Poly Pizza, or Poly Haven.
 
 ## Core Privacy Principles
 

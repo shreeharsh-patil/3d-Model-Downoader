@@ -22,11 +22,23 @@ export default defineConfig({
   }),
   
   manifest: {
-    name: '3D Model Downloader',
-    short_name: '3D Downloader',
-    description: 'Production-ready 3D model downloader and multi-format exporter for web-based 3D generation platforms.',
+    name: 'PolyFetch 3D - Universal Model Downloader',
+    short_name: 'PolyFetch 3D',
+    description: 'Universal 3D model downloader and multi-format exporter for Meshy, Tripo3D, Luma AI, Rodin, Sketchfab, Poly Pizza, and Poly Haven.',
     action: {
-      default_title: '3D Model Downloader',
+      default_title: 'PolyFetch 3D',
+      default_icon: {
+        16: 'icons/icon-16.png',
+        32: 'icons/icon-32.png',
+        48: 'icons/icon-48.png',
+        128: 'icons/icon-128.png',
+      },
+    },
+    icons: {
+      16: 'icons/icon-16.png',
+      32: 'icons/icon-32.png',
+      48: 'icons/icon-48.png',
+      128: 'icons/icon-128.png',
     },
     // permissions rationale:
     // - tabs: inspect active tab URL, track navigation (tabs.onUpdated) to clear stale state, and clean closed tabs (tabs.onRemoved)

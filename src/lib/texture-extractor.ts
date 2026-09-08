@@ -122,7 +122,7 @@ export async function extractPbrTextures(
     '  * ambient_occlusion: Surface ambient occlusion shadowing.',
     '  * emissive: Self-illumination color and intensity map.',
     '',
-    'Exported via 3D Model Downloader extension.',
+    'Exported via PolyFetch 3D browser extension.',
   ].join('\n');
 
   zipFiles['README.txt'] = strToU8(readmeContent);

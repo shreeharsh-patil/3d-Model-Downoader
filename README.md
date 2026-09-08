@@ -1,6 +1,13 @@
-# 3D Model Downloader
+# PolyFetch 3D
 
-A high-performance, developer-grade browser extension for inspecting, capturing, and exporting 3D models (GLB, STL, OBJ, USDZ, and PBR Textures) across web-based 3D generation and repository platforms (Meshy, Tripo3D, Luma AI, Rodin / Hyper3D, Sketchfab, Poly Pizza, and Poly Haven).
+<p align="center">
+  <img src="public/icons/logo.png" alt="PolyFetch 3D Logo" width="128" height="128" style="border-radius: 24px;" />
+</p>
+
+<p align="center">
+  <strong>Universal 3D Model Downloader & Multi-Format Exporter</strong><br>
+  <em>High-performance browser extension for inspecting, capturing, and exporting 3D models across web-based 3D generation and repository platforms.</em>
+</p>
 
 ---
 

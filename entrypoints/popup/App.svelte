@@ -176,10 +176,8 @@
   <!-- Header -->
   <header>
     <div class="brand">
-      <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-      </svg>
-      <span class="title">3D Model Downloader</span>
+      <img src="/icons/icon-48.png" alt="PolyFetch 3D" class="brand-logo" />
+      <span class="title">PolyFetch <span class="accent">3D</span></span>
     </div>
     <div class="header-right">
       {#if tabState?.currentWebsiteLabel}
@@ -577,20 +575,26 @@
   .brand {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 9px;
   }
 
-  .logo {
-    width: 20px;
-    height: 20px;
-    color: #3b82f6;
+  .brand-logo {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    box-shadow: 0 0 10px rgba(14, 165, 233, 0.35);
+    object-fit: cover;
   }
 
   .title {
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 14.5px;
+    font-weight: 700;
     letter-spacing: -0.2px;
     color: #f3f4f6;
+  }
+
+  .title .accent {
+    color: #38bdf8;
   }
 
   .header-right {

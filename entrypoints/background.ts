@@ -75,7 +75,7 @@ async function getActiveTabState(): Promise<TabState> {
 }
 
 export default defineBackground(() => {
-  logger.info('Background', '3D Model Downloader background service worker initialized');
+  logger.info('Background', 'PolyFetch 3D background service worker initialized');
 
   // Clean up tab state when tabs close
   browser.tabs.onRemoved?.addListener((tabId) => {

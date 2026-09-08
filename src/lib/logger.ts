@@ -39,7 +39,7 @@ class Logger {
   private log(level: LogLevel, scope: string, ...args: unknown[]) {
     if (level === 'debug' && !this.enabled) return;
 
-    const prefix = `[3D Model Downloader][${scope}]`;
+    const prefix = `[PolyFetch 3D][${scope}]`;
     const sanitizedArgs = args.map((a) => this.sanitize(a));
 
     switch (level) {
