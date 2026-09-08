@@ -1,12 +1,12 @@
 # 3D Model Downloader
 
-A high-performance, developer-grade browser extension for inspecting, capturing, and exporting 3D models (GLB, STL, OBJ, USDZ, and PBR Textures) across web-based 3D generation platforms (Meshy, Tripo3D, Luma AI, and Rodin / Hyper3D).
+A high-performance, developer-grade browser extension for inspecting, capturing, and exporting 3D models (GLB, STL, OBJ, USDZ, and PBR Textures) across web-based 3D generation and repository platforms (Meshy, Tripo3D, Luma AI, Rodin / Hyper3D, Sketchfab, Poly Pizza, and Poly Haven).
 
 ---
 
 ## Features
 
-- **Multi-Provider Architecture**: Decoupled provider modules for Meshy (`meshy.ai`), Tripo3D (`tripo3d.ai`), Luma AI (`lumalabs.ai`), and Rodin / Hyper3D (`hyperhuman.deemos.com`), extensible for future platforms without rewriting UI or background code.
+- **Multi-Provider Architecture**: Decoupled provider modules for Meshy (`meshy.ai`), Tripo3D (`tripo3d.ai`), Luma AI (`lumalabs.ai`), Rodin / Hyper3D (`hyperhuman.deemos.com`), Sketchfab (`sketchfab.com`), Poly Pizza (`poly.pizza`), and Poly Haven (`polyhaven.com`), extensible for future platforms without rewriting UI or background code.
 - **Multi-Format 3D Export**: Export captured 3D models to Universal GLB (glTF 2.0 binary), STL (for 3D printing slicers), Wavefront OBJ (mesh geometry & UVs), Apple AR USDZ (iOS Quick Look), and PBR Texture Pack (ZIP archive with albedo, normal, metallic-roughness, ambient occlusion, and emissive maps + README guide).
 - **Per-Tab State Isolation**: Each browser tab maintains its own isolated model state (`Record<number, TabModelState>`). Switching between tabs or opening different models in different tabs will never cross-contaminate models.
 - **Stale Async Protection**: Generation counters, revision tracking, and `AbortController` cancel obsolete operations and prevent older in-flight requests from overwriting newer active models when rapidly switching models (`A -> B -> C`).
@@ -29,6 +29,9 @@ A high-performance, developer-grade browser extension for inspecting, capturing,
 | **Tripo3D** | `https://studio.tripo3d.ai/*`<br>`https://www.tripo3d.ai/*` | Resource timing observation of `tripo_pbr_model_*_meshopt.glb` | GLB, STL, OBJ, USDZ, PBR ZIP |
 | **Luma AI** | `https://lumalabs.ai/*`<br>`https://cdn.lumalabs.ai/*` | Network observation of Genie 3D assets | GLB, STL, OBJ, USDZ, PBR ZIP |
 | **Rodin / Hyper3D** | `https://hyperhuman.deemos.com/*`<br>`https://hyper3d.ai/*` | Model asset request interception & dequantization | GLB, STL, OBJ, USDZ, PBR ZIP |
+| **Sketchfab** | `https://sketchfab.com/*` | Viewer asset stream interception & ZIP unpack | GLB, STL, OBJ, USDZ, PBR ZIP |
+| **Poly Pizza** | `https://poly.pizza/*`<br>`https://polypizza.net/*` | Direct asset detection & glTF/OBJ capture | GLB, STL, OBJ, USDZ, PBR ZIP |
+| **Poly Haven** | `https://polyhaven.com/*`<br>`https://polyhaven.org/*` | Asset CDN download stream & glTF processing | GLB, STL, OBJ, USDZ, PBR ZIP |
 
 ---
 
@@ -112,14 +115,19 @@ src/lib/
     ├── provider.interface.ts # ModelProvider interface
     ├── registry.ts           # Provider registry and matching
     ├── meshy/                # Meshy provider implementation & constants
-    └── tripo/                # Tripo provider implementation & constants
+    ├── tripo/                # Tripo provider implementation & constants
+    ├── luma/                 # Luma AI provider implementation & constants
+    ├── rodin/                # Rodin / Hyper3D provider implementation & constants
+    ├── sketchfab/            # Sketchfab provider implementation & constants
+    ├── polypizza/            # Poly Pizza provider implementation & constants
+    └── polyhaven/            # Poly Haven provider implementation & constants
 ```
 
 ### Runtime Data Flow
 
 1. **Detection**:
    - On Meshy, an unprivileged MAIN-world hook monitors worker messages for decoded model buffers and network requests for `model.json`/`model.meshy`.
-   - On Tripo, a content script uses `PerformanceObserver` to identify loaded model URLs.
+   - On Tripo, Luma, Rodin, Sketchfab, Poly Pizza, and Poly Haven, content scripts and resource observers identify loaded model and asset URLs.
 2. **Validation**:
    - Assets are checked through `validateGlb`. Non-GLB payloads (HTML error pages, JSON API errors, images) are rejected with human-readable errors.
 3. **State Management**:
@@ -136,7 +144,7 @@ src/lib/
 | `tabs` | Query active tab, isolate state per tab, detect navigation (`tabs.onUpdated`) to invalidate stale model state, and clean up closed tabs (`tabs.onRemoved`). |
 | `storage` | Persist user preferences (preferred texture format, auto-prompt) and local download history (up to 20 items, containing no credentials). |
 | `activeTab` | Temporary interaction with the active tab when opening the extension popup. |
-| Host permissions | Strictly scoped to `*.meshy.ai` and `*.tripo3d.ai` domains. No `<all_urls>`. |
+| Host permissions | Strictly scoped to supported platforms (`*.meshy.ai`, `*.tripo3d.ai`, `*.lumalabs.ai`, `*.deemos.com`, `*.sketchfab.com`, `*.poly.pizza`, `*.polyhaven.com`, etc.). No `<all_urls>`. |
 
 ### Content Security Policy (CSP)
 

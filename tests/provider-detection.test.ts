@@ -42,10 +42,31 @@ describe('Provider Detection', () => {
     expect(isSupportedUrl('https://hyperhuman.deemos.com/rodin')).toBe(true);
   });
 
+  it('detects Sketchfab URLs correctly', () => {
+    expect(findProvider('https://sketchfab.com/3d-models/drone-4f81c9b2e3d4416bb8972e617d3cf021')?.id).toBe('sketchfab');
+    expect(findProvider('https://sketchfab.com/feed')?.id).toBe('sketchfab');
+    expect(findProvider('https://sketchfab.com')?.id).toBe('sketchfab');
+    expect(isSupportedUrl('https://sketchfab.com/feed')).toBe(true);
+  });
+
+  it('detects Poly Pizza URLs correctly', () => {
+    expect(findProvider('https://poly.pizza/m/4eGf9a')?.id).toBe('polypizza');
+    expect(findProvider('https://poly.pizza')?.id).toBe('polypizza');
+    expect(findProvider('https://polypizza.net/m/123')?.id).toBe('polypizza');
+    expect(isSupportedUrl('https://poly.pizza/m/123')).toBe(true);
+  });
+
+  it('detects Poly Haven URLs correctly', () => {
+    expect(findProvider('https://polyhaven.com/a/brass_vase')?.id).toBe('polyhaven');
+    expect(findProvider('https://polyhaven.com/models')?.id).toBe('polyhaven');
+    expect(findProvider('https://polyhaven.org/a/chair')?.id).toBe('polyhaven');
+    expect(isSupportedUrl('https://polyhaven.com')).toBe(true);
+  });
+
   it('rejects unsupported URLs', () => {
     expect(findProvider('https://github.com/shreeharsh-patil/3d-Model-Downoader')).toBeUndefined();
     expect(findProvider('https://google.com')).toBeUndefined();
-    expect(findProvider('https://sketchfab.com/models/123')).toBeUndefined();
+    expect(findProvider('https://artstation.com/artwork/123')).toBeUndefined();
     expect(findProvider('')).toBeUndefined();
     expect(findProvider(undefined)).toBeUndefined();
     expect(isSupportedUrl('https://github.com')).toBe(false);

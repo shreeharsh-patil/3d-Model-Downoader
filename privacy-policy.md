@@ -2,9 +2,9 @@
 
 _Last updated: September 2026_
 
-3D Model Downloader is an independent browser extension that assists users in detecting and downloading legitimately accessible 3D models generated on supported web-based 3D generation platforms (Meshy, Tripo3D, Luma AI, and Rodin / Hyper3D).
+3D Model Downloader is an independent browser extension that assists users in detecting and downloading legitimately accessible 3D models generated on supported web-based 3D generation and repository platforms (Meshy, Tripo3D, Luma AI, Rodin / Hyper3D, Sketchfab, Poly Pizza, and Poly Haven).
 
-3D Model Downloader is an independent project and is not affiliated with, endorsed by, or connected to Meshy.ai, Tripo3D.ai, Luma AI, or Deemos / Rodin.
+3D Model Downloader is an independent project and is not affiliated with, endorsed by, or connected to Meshy.ai, Tripo3D.ai, Luma AI, Deemos / Rodin, Sketchfab, Poly Pizza, or Poly Haven.
 
 ## Core Privacy Principles
 
@@ -33,7 +33,7 @@ The extension processes limited technical data entirely on your device:
 
 ## Third-Party Services and Platforms
 
-The extension runs within pages hosted by third-party services (Meshy, Tripo3D, Luma AI, and Rodin). We do not control and are not responsible for the privacy practices, terms of service, or cookies utilized by those platforms. Please consult their respective privacy policies.
+The extension runs within pages hosted by third-party services (Meshy, Tripo3D, Luma AI, Rodin, Sketchfab, Poly Pizza, and Poly Haven). We do not control and are not responsible for the privacy practices, terms of service, or cookies utilized by those platforms. Please consult their respective privacy policies.
 
 ## Open Source and Auditing
 

@@ -45,4 +45,15 @@ describe('Filename Sanitization', () => {
     const rodinZip = sanitizeFilename('sculpture', 'rodin', 'textures');
     expect(rodinZip).toBe('sculpture_rodin.zip');
   });
+
+  it('handles Sketchfab, Poly Pizza, and Poly Haven provider tags', () => {
+    const sketchfabModel = sanitizeFilename('sci-fi-helmet', 'sketchfab', 'glb');
+    expect(sketchfabModel).toBe('sci-fi-helmet_sketchfab.glb');
+
+    const pizzaModel = sanitizeFilename('low_poly_tree', 'polypizza', 'stl');
+    expect(pizzaModel).toBe('low_poly_tree_polypizza.stl');
+
+    const havenModel = sanitizeFilename('brass_vase', 'polyhaven', 'obj');
+    expect(havenModel).toBe('brass_vase_polyhaven.obj');
+  });
 });
