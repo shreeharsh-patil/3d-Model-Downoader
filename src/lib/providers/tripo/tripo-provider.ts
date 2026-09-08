@@ -51,13 +51,14 @@ export class TripoProvider implements ModelProvider {
       const host = parsed.hostname.toLowerCase();
       // Recognized Tripo data servers and domains
       const isTripoDomain =
-        host.includes('tripo3d.com') ||
-        host.includes('tripo3d.ai') ||
-        host.includes('tripo-data');
-      const isKnownStorage = host.includes('amazonaws.com') || host.includes('cloudfront.net');
-      const hasTripoInPath = pathname.includes('tripo');
+        host === 'tripo3d.com' || host.endsWith('.tripo3d.com') ||
+        host === 'tripo3d.ai' || host.endsWith('.tripo3d.ai');
+      const isKnownStorage = host === 'amazonaws.com' || host.endsWith('.amazonaws.com') ||
+        host === 'cloudfront.net' || host.endsWith('.cloudfront.net');
+      const hasProviderEvidence = /(^|[\/_-])tripo([\/_-]|$)/i.test(pathname) ||
+        /tripo[_-].*\.glb$/i.test(filename);
 
-      return isTripoDomain || (isKnownStorage && hasTripoInPath) || filename.includes('model');
+      return isTripoDomain || (isKnownStorage && hasProviderEvidence);
     } catch {
       return false;
     }

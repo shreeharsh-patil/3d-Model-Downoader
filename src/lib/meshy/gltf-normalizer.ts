@@ -50,6 +50,7 @@ type GltfDocument = {
   meshes?: Array<{
     primitives?: Array<{
       attributes?: Record<string, number>;
+      targets?: Array<Record<string, number>>;
       material?: number;
     }>;
   }>;
@@ -252,13 +253,30 @@ function stripExtension(list: string[] | undefined, extensionName: string) {
 }
 
 function hasQuantizedMeshAttributes(gltf: GltfDocument) {
-  const quantizedSemantics = new Set(['POSITION', 'NORMAL', 'TANGENT', 'TEXCOORD_0', 'TEXCOORD_1', 'TEXCOORD_2', 'TEXCOORD_3']);
+  function dependsOnExtension(semantic: string, accessorIndex: number): boolean {
+    const accessor = gltf.accessors?.[accessorIndex];
+    if (!accessor || accessor.componentType === COMPONENT_FLOAT) return false;
+    if (semantic === 'JOINTS_0' || semantic === 'JOINTS_1') {
+      return ![COMPONENT_UNSIGNED_BYTE, COMPONENT_UNSIGNED_SHORT].includes(accessor.componentType);
+    }
+    if (semantic === 'WEIGHTS_0' || semantic === 'WEIGHTS_1') {
+      return ![COMPONENT_UNSIGNED_BYTE, COMPONENT_UNSIGNED_SHORT].includes(accessor.componentType) || !accessor.normalized;
+    }
+    if (/^(TEXCOORD_|COLOR_)/.test(semantic)) {
+      return ![COMPONENT_UNSIGNED_BYTE, COMPONENT_UNSIGNED_SHORT].includes(accessor.componentType) || !accessor.normalized;
+    }
+    return true;
+  }
+
   for (const mesh of gltf.meshes ?? []) {
     for (const primitive of mesh.primitives ?? []) {
       for (const [semantic, accessorIndex] of Object.entries(primitive.attributes ?? {})) {
-        const accessor = gltf.accessors?.[accessorIndex];
-        if (!accessor || !quantizedSemantics.has(semantic)) continue;
-        if (accessor.componentType !== COMPONENT_FLOAT) return true;
+        if (dependsOnExtension(semantic, accessorIndex)) return true;
+      }
+      for (const target of primitive.targets ?? []) {
+        for (const [semantic, accessorIndex] of Object.entries(target)) {
+          if (dependsOnExtension(semantic, accessorIndex)) return true;
+        }
       }
     }
   }
@@ -328,8 +346,8 @@ export function normalizeQuantizedPositionsInGlb(buffer: ArrayBuffer): ArrayBuff
     gltf.bufferViews = bufferViews;
     gltf.buffers ??= [{ byteLength: 0 }];
     gltf.buffers[0].byteLength = nextBin.byteLength;
-    gltf.extensionsRequired = stripExtension(gltf.extensionsRequired, KHR_MESH_QUANTIZATION);
     if (!hasQuantizedMeshAttributes(gltf)) {
+      gltf.extensionsRequired = stripExtension(gltf.extensionsRequired, KHR_MESH_QUANTIZATION);
       gltf.extensionsUsed = stripExtension(gltf.extensionsUsed, KHR_MESH_QUANTIZATION);
     }
 

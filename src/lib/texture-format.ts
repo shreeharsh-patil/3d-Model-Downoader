@@ -6,6 +6,8 @@ import {
   KHRTextureBasisu,
 } from '@gltf-transform/extensions';
 import type { TextureFormat } from './types';
+import { validateGlb } from './glb-validator';
+import { logger } from './logger';
 
 const TARGET_MIME_TYPES: Record<Exclude<TextureFormat, 'default'>, string> = {
   webp: 'image/webp',
@@ -13,7 +15,7 @@ const TARGET_MIME_TYPES: Record<Exclude<TextureFormat, 'default'>, string> = {
   jpg: 'image/jpeg',
 };
 
-function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: number) {
+function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality: number) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
@@ -24,7 +26,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: num
         resolve(blob);
       },
       mimeType,
-      mimeType === 'image/png' ? undefined : (quality !== undefined ? quality / 100 : 0.92),
+      mimeType === 'image/png' ? undefined : quality,
     );
   });
 }
@@ -33,7 +35,7 @@ async function transcodeImage(
   image: Uint8Array<ArrayBuffer>,
   sourceMimeType: string,
   targetMimeType: string,
-  quality?: number,
+  quality: number,
 ) {
   if (sourceMimeType === targetMimeType) return image;
 
@@ -67,30 +69,50 @@ async function transcodeImage(
  * Re-encodes every embedded GLB texture with browser image codecs, then uses
  * glTF-Transform to replace texture payloads and update format extensions.
  */
-export async function formatGlbTextures(buffer: ArrayBuffer, format: TextureFormat, quality?: number) {
+export async function formatGlbTextures(buffer: ArrayBuffer, format: TextureFormat, quality = 0.92) {
   if (format === 'default') return buffer;
 
   const io = new WebIO().registerExtensions(ALL_EXTENSIONS);
   const document = await io.readBinary(new Uint8Array(buffer));
   const targetMimeType = TARGET_MIME_TYPES[format];
+  const safeQuality = Math.min(1, Math.max(0.1, quality > 1 ? quality / 100 : quality));
   let convertedTextureCount = 0;
+  const dataTextures = new Set<unknown>();
+  const alphaTextures = new Set<unknown>();
+
+  for (const material of document.getRoot().listMaterials()) {
+    const dataMaps = [material.getNormalTexture(), material.getMetallicRoughnessTexture(), material.getOcclusionTexture()];
+    for (const texture of dataMaps) if (texture) dataTextures.add(texture);
+    const baseColor = material.getBaseColorTexture();
+    if (baseColor && (material.getAlphaMode() !== 'OPAQUE' || material.getBaseColorFactor()[3] < 1)) alphaTextures.add(baseColor);
+  }
 
   for (const texture of document.getRoot().listTextures()) {
     const image = texture.getImage();
     if (!image) continue;
 
-    const convertedImage = await transcodeImage(image, texture.getMimeType(), targetMimeType, quality);
-    texture
-      .setImage(convertedImage)
-      .setMimeType(targetMimeType)
-      .setURI('');
-    convertedTextureCount += 1;
+    if ((format === 'jpg' || format === 'webp') && dataTextures.has(texture)) {
+      logger.warn('TextureFormat', `Skipped lossy ${format.toUpperCase()} conversion for a data texture.`);
+      continue;
+    }
+    if (format === 'jpg' && alphaTextures.has(texture)) {
+      logger.warn('TextureFormat', 'Skipped JPEG conversion for a texture used with material transparency.');
+      continue;
+    }
+    try {
+      const convertedImage = await transcodeImage(image, texture.getMimeType(), targetMimeType, safeQuality);
+      texture.setImage(convertedImage).setMimeType(targetMimeType).setURI('');
+      convertedTextureCount += 1;
+    } catch (error) {
+      logger.warn('TextureFormat', 'Skipped an unsupported texture while preserving its original bytes.', error);
+    }
   }
 
   if (convertedTextureCount === 0) return buffer;
 
-  document.disposeExtension(EXTTextureAVIF.EXTENSION_NAME);
-  document.disposeExtension(KHRTextureBasisu.EXTENSION_NAME);
+  const remainingMimeTypes = new Set(document.getRoot().listTextures().map((texture) => texture.getMimeType()));
+  if (!remainingMimeTypes.has('image/avif')) document.disposeExtension(EXTTextureAVIF.EXTENSION_NAME);
+  if (!remainingMimeTypes.has('image/ktx2')) document.disposeExtension(KHRTextureBasisu.EXTENSION_NAME);
 
   if (format === 'webp') {
     const webpExtension = document.getRoot().listExtensionsUsed()
@@ -98,9 +120,14 @@ export async function formatGlbTextures(buffer: ArrayBuffer, format: TextureForm
       ?? document.createExtension(EXTTextureWebP);
     webpExtension.setRequired(true);
   } else {
-    document.disposeExtension(EXTTextureWebP.EXTENSION_NAME);
+    if (!remainingMimeTypes.has('image/webp')) document.disposeExtension(EXTTextureWebP.EXTENSION_NAME);
   }
 
   const output = await io.writeBinary(document);
-  return output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
+  const result = output.byteOffset === 0 && output.byteLength === output.buffer.byteLength
+    ? output.buffer as ArrayBuffer
+    : output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
+  const validation = validateGlb(result);
+  if (!validation.valid) throw new Error(`Texture conversion produced an invalid GLB: ${validation.reason}`);
+  return result;
 }

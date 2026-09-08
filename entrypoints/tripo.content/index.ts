@@ -8,28 +8,18 @@ import { logger } from '../../src/lib/logger';
 import { BRIDGE_SOURCE, isMainWorldMessage } from '../../src/lib/messages';
 import { findProvider } from '../../src/lib/providers/registry';
 import { tripoProvider } from '../../src/lib/providers/tripo/tripo-provider';
+import { TripoModelStore, type TripoDetectionSource } from '../../src/lib/providers/tripo/model-state';
 import type { ModelProvider } from '../../src/lib/providers/provider.interface';
 import type { DetectedModel, DownloaderSettings, ExportFormat, ModelMetadata, PageState } from '../../src/lib/types';
-
-interface TripoActiveModel {
-  url: string;
-  modelKey: string;
-  detectedAt: number;
-  previewUrl?: string;
-  metadata?: ModelMetadata;
-}
 
 function getActiveProvider(): ModelProvider {
   return findProvider(window.location.href) ?? tripoProvider;
 }
 
-let activeModel: TripoActiveModel | null = null;
 let lastDownloadAt: number | undefined;
-let modelGeneration = 0;
-let pendingDownload = false;
 let resourceObserver: PerformanceObserver | undefined;
 const jobs = new DownloadJobController();
-const candidates = new Map<string, TripoActiveModel>();
+const tripoModelStore = new TripoModelStore();
 
 const overlayConfig = {
   eventPrefix: 'model-downloader',
@@ -38,18 +28,6 @@ const overlayConfig = {
   },
   fileFormat: 'GLB',
 };
-
-function getModelKey(url: string | undefined): string | undefined {
-  if (!url) return undefined;
-  try {
-    const parsed = new URL(url, window.location.href);
-    const dir = parsed.pathname.replace(/\/[^/]+$/, '');
-    return `${parsed.origin}${dir}`;
-  } catch {
-    const noQuery = url.split('?')[0];
-    return noQuery.replace(/\/[^/]+$/, '');
-  }
-}
 
 function extractTripoModelName(): string | undefined {
   try {
@@ -68,8 +46,8 @@ function extractTripoModelName(): string | undefined {
         return text;
       }
     }
-    if (activeModel?.url) {
-      return getActiveProvider().extractModelId(activeModel.url);
+    if (tripoModelStore.active?.url) {
+      return getActiveProvider().extractModelId(tripoModelStore.active.url);
     }
   } catch {
     // ignore
@@ -78,8 +56,8 @@ function extractTripoModelName(): string | undefined {
 }
 
 function extractTripoThumbnailUrl(): string | undefined {
-  if (activeModel?.previewUrl) {
-    return activeModel.previewUrl;
+  if (tripoModelStore.active?.previewUrl) {
+    return tripoModelStore.active.previewUrl;
   }
 
   try {
@@ -136,7 +114,7 @@ function scanExistingResources(): void {
     }
 
     // Also scan DOM for model URLs in attributes or links
-    if (!activeModel) {
+    if (!tripoModelStore.active) {
       const elements = document.querySelectorAll('[src*=".glb"], [data-src*=".glb"], [href*=".glb"], [model-src*=".glb"]');
       for (const el of Array.from(elements)) {
         const src =
@@ -147,7 +125,7 @@ function scanExistingResources(): void {
         if (src && getActiveProvider().isModelAsset(src)) {
           try {
             const absoluteUrl = new URL(src, window.location.href).href;
-            inspectResource(absoluteUrl);
+            inspectResource(absoluteUrl, 'dom');
           } catch {
             // ignore
           }
@@ -160,23 +138,26 @@ function scanExistingResources(): void {
 }
 
 function getPageState(): PageState {
+  const activeModel = tripoModelStore.active;
   if (!activeModel) {
     scanExistingResources();
   }
 
+  const current = tripoModelStore.active;
+
   return {
     injected: true,
-    hasDecodedGlb: activeModel !== null,
-    hasActiveModel: activeModel !== null,
-    activeModelUrl: activeModel?.url,
+    hasDecodedGlb: current !== null,
+    hasActiveModel: current !== null,
+    activeModelUrl: current?.url,
     modelName: extractTripoModelName(),
     previewUrl: extractTripoThumbnailUrl(),
     pendingDownload: jobs.current?.status === 'queued',
     lastDownloadAt,
-    status: activeModel ? 'ready' : 'detecting',
-    metadata: activeModel?.metadata,
-    activeModelKey: activeModel?.modelKey,
-    generation: modelGeneration,
+    status: current ? 'ready' : 'detecting',
+    metadata: current?.metadata,
+    activeModelKey: current?.modelKey,
+    generation: tripoModelStore.generation,
     job: jobs.current ?? undefined,
   };
 }
@@ -195,6 +176,7 @@ function notifyOverlay(type: string, detail?: unknown) {
 
 async function syncWithBackground() {
   const provider = getActiveProvider();
+  const activeModel = tripoModelStore.active;
   const modelName = extractTripoModelName();
   const previewUrl = extractTripoThumbnailUrl();
   const detectedModel: DetectedModel | undefined = activeModel
@@ -223,7 +205,7 @@ async function syncWithBackground() {
           pageUrl: window.location.href,
           modelId: activeModel?.modelKey,
           model: detectedModel,
-          revision: modelGeneration,
+          revision: tripoModelStore.generation,
           updatedAt: Date.now(),
           status: activeModel ? 'ready' : 'detecting',
         },
@@ -234,43 +216,40 @@ async function syncWithBackground() {
   }
 }
 
-function handleTripoGlbUrlDetected(url: string, previewUrl?: string, capturedAt = Date.now()) {
-  if (activeModel?.url === url) {
-    if (previewUrl && !activeModel.previewUrl) {
-      activeModel.previewUrl = previewUrl;
-      void syncWithBackground();
-    }
+function handleTripoGlbUrlDetected(url: string, previewUrl?: string, capturedAt = Date.now(), source: TripoDetectionSource = 'network') {
+  const pageHint = getActiveProvider().extractModelId(window.location.href);
+  const result = tripoModelStore.consider({
+    url,
+    detectedAt: capturedAt,
+    previewUrl,
+    source,
+  }, pageHint);
+  if (!result?.activated) return;
+  const { candidate } = result;
+
+  if (!result.changed) {
+    if (previewUrl) void syncWithBackground();
     return;
   }
-
-  const modelKey = getModelKey(url) ?? url;
-  candidates.set(modelKey, { url, modelKey, detectedAt: capturedAt, previewUrl });
-  modelGeneration += 1;
-  activeModel = {
-    url,
-    modelKey,
-    detectedAt: capturedAt,
-    previewUrl: previewUrl ?? extractTripoThumbnailUrl(),
-  };
   jobs.cancel();
 
-  logger.info(getActiveProvider().label, `Active ${getActiveProvider().label} model updated`, { modelKey, url });
+  logger.info(getActiveProvider().label, `Active ${getActiveProvider().label} model updated`, { modelKey: candidate.modelKey, url });
 
   notifyOverlay('model-changed', {
-    generation: modelGeneration,
-    modelKey,
+    generation: tripoModelStore.generation,
+    modelKey: candidate.modelKey,
   });
   notifyOverlay('glb-ready', {
-    generation: modelGeneration,
-    modelKey,
+    generation: tripoModelStore.generation,
+    modelKey: candidate.modelKey,
   });
 
   void syncWithBackground();
 }
 
-function inspectResource(url: string) {
+function inspectResource(url: string, source: TripoDetectionSource = 'performance') {
   if (getActiveProvider().isModelAsset(url)) {
-    handleTripoGlbUrlDetected(url);
+    handleTripoGlbUrlDetected(url, undefined, Date.now(), source);
   }
 }
 
@@ -291,110 +270,107 @@ function installResourceObserver() {
 }
 
 async function downloadActiveModel(targetFormat?: ExportFormat) {
-  if (!activeModel) {
+  if (!tripoModelStore.active) {
     scanExistingResources();
   }
 
   const provider = getActiveProvider();
+  const activeModel = tripoModelStore.active;
   if (!activeModel) {
     const errorMsg = `No ${provider.label} model is currently detected. Open or select a model first.`;
     notifyOverlay('download-error', {
-      generation: modelGeneration,
+      generation: tripoModelStore.generation,
       error: errorMsg,
     });
     return { ok: false, error: errorMsg };
   }
 
-  pendingDownload = true;
+  const generation = tripoModelStore.generation;
+  const job = jobs.begin(provider.id, activeModel.modelKey, generation, activeModel.url);
+  if (!job) return { ok: false, error: 'A model download is already in progress.' };
   notifyOverlay('download-processing', {
-    generation: modelGeneration,
+    generation,
     modelKey: activeModel.modelKey,
   });
 
   const modelName = extractTripoModelName();
   logger.info(provider.label, `Processing ${provider.label} GLB through background worker...`, activeModel.url);
+  jobs.transition(job, 'processing');
 
-  const result = (await browser.runtime.sendMessage({
-    type: 'process-model-glb',
-    url: activeModel.url,
-    modelName,
-    provider: provider.id,
-  })) as {
-    ok: boolean;
-    error?: string;
-    buffer?: ArrayBuffer;
-    byteLength?: number;
-    filename?: string;
-  };
-
-  pendingDownload = false;
-
-  if (!result?.ok || !result.buffer) {
-    const error = result?.error ?? `Failed to process ${provider.label} model.`;
-    logger.error(provider.label, 'Processing failed', error);
-    notifyOverlay('download-error', {
-      generation: modelGeneration,
-      modelKey: activeModel.modelKey,
-      error,
-    });
-    return { ok: false, error };
-  }
-
-  let buffer: ArrayBuffer = result.buffer;
-
-  // Optional texture transcoding if configured
   try {
-    const settings = (await browser.runtime.sendMessage({ type: 'get-settings' })) as DownloaderSettings;
-    if (settings?.textureFormat && settings.textureFormat !== 'default') {
-      const { formatGlbTextures } = await import('../../src/lib/texture-format');
-      buffer = await formatGlbTextures(buffer, settings.textureFormat);
-    }
-  } catch (error) {
-    logger.warn(provider.label, 'Texture formatting failed, downloading original textures', error);
-  }
+    const result = (await browser.runtime.sendMessage({
+      type: 'process-model-glb',
+      url: activeModel.url,
+      modelName,
+      provider: provider.id,
+    })) as {
+      ok: boolean;
+      error?: string;
+      buffer?: ArrayBuffer;
+      byteLength?: number;
+      filename?: string;
+    };
 
-  let requestedFormat = targetFormat;
-  if (!requestedFormat) {
+    if (!jobs.isCurrent(job, tripoModelStore.active?.modelKey, tripoModelStore.generation)) {
+      return { ok: false, error: 'Model selection changed during download.' };
+    }
+    if (!result?.ok || !result.buffer) throw new Error(result?.error ?? `Failed to process ${provider.label} model.`);
+
+    let buffer: ArrayBuffer = result.buffer;
+    let settings: DownloaderSettings | undefined;
     try {
-      const settings = (await browser.runtime.sendMessage({ type: 'get-settings' })) as DownloaderSettings;
-      requestedFormat = settings?.exportFormat ?? 'glb';
-    } catch {
-      requestedFormat = 'glb';
+      settings = (await browser.runtime.sendMessage({ type: 'get-settings' })) as DownloaderSettings;
+      if (settings?.textureFormat && settings.textureFormat !== 'default') {
+        const { formatGlbTextures } = await import('../../src/lib/texture-format');
+        buffer = await formatGlbTextures(buffer, settings.textureFormat, settings.textureQuality);
+      }
+    } catch (error) {
+      logger.warn(provider.label, 'Texture formatting failed, downloading original textures', error);
     }
-  }
 
-  const validation = validateGlb(buffer);
-  if (validation.metadata && activeModel) {
-    activeModel.metadata = validation.metadata;
-  }
+    if (!jobs.isCurrent(job, tripoModelStore.active?.modelKey, tripoModelStore.generation)) {
+      return { ok: false, error: 'Model selection changed during download.' };
+    }
 
-  try {
+    const requestedFormat = targetFormat ?? settings?.exportFormat ?? 'glb';
+    jobs.transition(job, 'validating');
+    const validation = validateGlb(buffer);
+    if (!validation.valid) throw new Error(validation.reason ?? 'Processed model is not a valid GLB.');
+    if (validation.metadata) tripoModelStore.updateMetadata(job.modelKey, job.generation, validation.metadata);
+    jobs.transition(job, 'downloading');
+
     const finalFilename = result.filename ?? provider.formatFilename(modelName);
     const downloadRes = await executeDownload(buffer, {
       filename: finalFilename,
       modelName,
       provider: provider.id,
       exportFormat: requestedFormat,
-      skipValidation: false,
+      skipValidation: true,
     });
 
+    if (!jobs.isCurrent(job, tripoModelStore.active?.modelKey, tripoModelStore.generation)) {
+      return { ok: false, error: 'Model selection changed during download.' };
+    }
+    jobs.transition(job, 'completed');
     lastDownloadAt = Date.now();
     notifyOverlay('download-started', {
       byteLength: downloadRes.size,
-      generation: modelGeneration,
+      generation,
       modelKey: activeModel.modelKey,
     });
 
     void syncWithBackground();
     return { ok: true, byteLength: downloadRes.size };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    jobs.transition(job, 'error', message);
     logger.error(provider.label, 'Download failed', error);
     notifyOverlay('download-error', {
-      generation: modelGeneration,
+      generation,
       modelKey: activeModel.modelKey,
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     });
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, error: message };
   }
 }
 
@@ -431,14 +407,15 @@ export default defineContentScript({
       if (!isMainWorldMessage(data)) return;
 
       if (data.type === 'tripo-glb-url-detected') {
-        const payload = data.payload as { url?: string; previewUrl?: string; capturedAt?: number };
+        const payload = data.payload as { url?: string; previewUrl?: string; capturedAt?: number; source?: TripoDetectionSource };
         if (payload?.url) {
-          handleTripoGlbUrlDetected(payload.url, payload.previewUrl, payload.capturedAt);
+          handleTripoGlbUrlDetected(payload.url, payload.previewUrl, payload.capturedAt, payload.source);
         }
       } else if (data.type === 'tripo-preview-detected') {
         const payload = data.payload as { previewUrl?: string };
+        const activeModel = tripoModelStore.active;
         if (payload?.previewUrl && activeModel) {
-          activeModel.previewUrl = payload.previewUrl;
+          tripoModelStore.consider({ ...activeModel, previewUrl: payload.previewUrl }, getActiveProvider().extractModelId(window.location.href));
           void syncWithBackground();
         }
       } else if (data.type === 'route-changed') {
@@ -479,7 +456,7 @@ export default defineContentScript({
     window.addEventListener(`${overlayConfig.eventPrefix}:user-choice`, (event) => {
       const choice = (event as CustomEvent).detail;
       if (choice === 'yes') void downloadActiveModel();
-      if (choice === 'no') pendingDownload = false;
+      if (choice === 'no') jobs.cancel('Cancelled by user.');
     });
 
     browser.runtime.onMessage.addListener((message) => {

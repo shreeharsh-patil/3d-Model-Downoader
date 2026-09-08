@@ -60,7 +60,8 @@ export function extractMeshyThumbnailUrl(): string | undefined {
     }
 
     // 3. Fallback to captured texture URL
-    const texture = meshyModelStore.getTextureUrl();
+    const modelKey = meshyModelStore.currentModelKey;
+    const texture = modelKey ? meshyModelStore.getTextureUrls(modelKey)[0] : undefined;
     if (texture) {
       return texture;
     }

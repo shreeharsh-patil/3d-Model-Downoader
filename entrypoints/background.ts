@@ -5,6 +5,7 @@ import { isExtensionMessage } from '../src/lib/messages';
 import { findProvider } from '../src/lib/providers/registry';
 import {
   clearDownloadHistory,
+  addDownloadToHistory,
   getSettings,
   getState,
   setState,
@@ -132,6 +133,10 @@ export default defineBackground(() => {
 
     if (message.type === 'clear-download-history') {
       return clearDownloadHistory().then(() => ({ ok: true }));
+    }
+
+    if (message.type === 'record-download') {
+      return addDownloadToHistory(message.item).then((history) => ({ ok: true, data: history }));
     }
 
     if (message.type === 'open-workspace') {

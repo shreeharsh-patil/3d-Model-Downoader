@@ -2,6 +2,19 @@ import type { DownloadJob, DownloadJobStatus, WebsiteId } from './types';
 
 const TERMINAL = new Set<DownloadJobStatus>(['completed', 'cancelled', 'error']);
 
+const ALLOWED_TRANSITIONS: Readonly<Record<DownloadJobStatus, readonly DownloadJobStatus[]>> = {
+  idle: ['detecting', 'queued', 'cancelled', 'error'],
+  detecting: ['ready', 'queued', 'cancelled', 'error'],
+  ready: ['queued', 'processing', 'cancelled', 'error'],
+  queued: ['processing', 'cancelled', 'error'],
+  processing: ['validating', 'cancelled', 'error'],
+  validating: ['downloading', 'cancelled', 'error'],
+  downloading: ['completed', 'cancelled', 'error'],
+  completed: [],
+  cancelled: [],
+  error: [],
+};
+
 export class DownloadJobController {
   private sequence = 0;
   private job: DownloadJob | null = null;
@@ -34,8 +47,9 @@ export class DownloadJobController {
 
   transition(job: DownloadJob, status: DownloadJobStatus, error?: string): boolean {
     if (this.job?.id !== job.id || TERMINAL.has(job.status)) return false;
+    if (status !== job.status && !ALLOWED_TRANSITIONS[job.status].includes(status)) return false;
     job.status = status;
-    job.error = error;
+    if (error !== undefined) job.error = error;
     return true;
   }
 

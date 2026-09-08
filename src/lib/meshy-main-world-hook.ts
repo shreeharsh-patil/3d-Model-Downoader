@@ -10,6 +10,21 @@ type DetectionRecord = {
   detectedAt: number;
 };
 
+type WorkerRequestRecord = {
+  candidate: DetectionRecord;
+  correlationId?: string;
+};
+
+function getCorrelationId(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ['requestId', 'messageId', 'jobId', 'id']) {
+    const id = record[key];
+    if (typeof id === 'string' || typeof id === 'number') return String(id);
+  }
+  return undefined;
+}
+
 function looksLikeGlb(buffer: ArrayBuffer): boolean {
   if (buffer.byteLength < 12) return false;
   const view = new Uint8Array(buffer, 0, 4);
@@ -41,7 +56,24 @@ export function installMeshyMainWorldHook() {
   w[INSTALLED_KEY] = true;
   let detectionSequence = 0;
   let latestCandidate: DetectionRecord | undefined;
-  const workerCandidates = new WeakMap<Worker, DetectionRecord>();
+  const workerRequests = new WeakMap<Worker, WorkerRequestRecord[]>();
+
+  function recordWorkerRequest(worker: Worker, message: unknown) {
+    if (!latestCandidate) return;
+    const queue = workerRequests.get(worker) ?? [];
+    queue.push({ candidate: { ...latestCandidate }, correlationId: getCorrelationId(message) });
+    if (queue.length > 32) queue.splice(0, queue.length - 32);
+    workerRequests.set(worker, queue);
+  }
+
+  function takeWorkerCandidate(worker: Worker, message: unknown): DetectionRecord | undefined {
+    const queue = workerRequests.get(worker);
+    if (!queue?.length) return latestCandidate;
+    const responseId = getCorrelationId(message);
+    const index = responseId ? queue.findIndex((item) => item.correlationId === responseId) : 0;
+    if (index < 0) return undefined;
+    return queue.splice(index, 1)[0]?.candidate;
+  }
 
   function modelKeyFromAssetUrl(url: string): string | undefined {
     try {
@@ -114,7 +146,7 @@ export function installMeshyMainWorldHook() {
     if (record.type === 'process' && record.success === true) {
       const raw = toArrayBuffer(record.data);
       if (raw && looksLikeGlb(raw)) {
-        const candidate = workerCandidates.get(worker) ?? latestCandidate;
+        const candidate = takeWorkerCandidate(worker, data);
         if (!candidate) return;
         const copy = raw.slice(0);
         postToContent('glb-ready', { data: copy, byteLength: copy.byteLength, capturedAt: Date.now(), url: candidate.binaryUrl, modelKey: candidate.modelKey, detectionId: candidate.id }, [copy]);
@@ -126,7 +158,7 @@ export function installMeshyMainWorldHook() {
     for (const key of Object.keys(record)) {
       const raw = toArrayBuffer(record[key]);
       if (raw && looksLikeGlb(raw)) {
-        const candidate = workerCandidates.get(worker) ?? latestCandidate;
+        const candidate = takeWorkerCandidate(worker, data);
         if (!candidate) return;
         const copy = raw.slice(0);
         postToContent('glb-ready', { data: copy, byteLength: copy.byteLength, capturedAt: Date.now(), url: candidate.binaryUrl, modelKey: candidate.modelKey, detectionId: candidate.id }, [copy]);
@@ -154,9 +186,10 @@ export function installMeshyMainWorldHook() {
   };
 
   const nativeWorkerPostMessage = NativeWorker.prototype.postMessage;
-  NativeWorker.prototype.postMessage = function (message: unknown, transferOrOptions?: any) {
-    if (latestCandidate) workerCandidates.set(this, latestCandidate);
-    return (nativeWorkerPostMessage as any).apply(this, arguments);
+  NativeWorker.prototype.postMessage = function (message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions) {
+    recordWorkerRequest(this, message);
+    if (transferOrOptions === undefined) return nativeWorkerPostMessage.call(this, message);
+    return nativeWorkerPostMessage.call(this, message, transferOrOptions as StructuredSerializeOptions);
   };
 
   const onmessageDescriptor = Object.getOwnPropertyDescriptor(NativeWorker.prototype, 'onmessage');

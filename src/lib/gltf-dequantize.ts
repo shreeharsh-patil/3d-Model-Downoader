@@ -77,6 +77,27 @@ function dequantizePrimitive(primitive: Primitive, options: Required<DequantizeO
   }
 }
 
+function documentNeedsQuantization(document: Document): boolean {
+  for (const mesh of document.getRoot().listMeshes()) {
+    for (const primitive of mesh.listPrimitives()) {
+      const attributeLists = [
+        primitive.listSemantics().map((semantic) => [semantic, primitive.getAttribute(semantic)] as const),
+        ...primitive.listTargets().map((target) => target.listSemantics().map((semantic) => [semantic, target.getAttribute(semantic)] as const)),
+      ];
+      for (const attributes of attributeLists) {
+        for (const [semantic, accessor] of attributes) {
+          if (!accessor || accessor.getComponentType() === 5126) continue;
+          if (/^JOINTS_/.test(semantic) && [5121, 5123].includes(accessor.getComponentType())) continue;
+          if (/^WEIGHTS_/.test(semantic) && [5121, 5123].includes(accessor.getComponentType()) && accessor.getNormalized()) continue;
+          if (/^(TEXCOORD_|COLOR_)/.test(semantic) && [5121, 5123].includes(accessor.getComponentType()) && accessor.getNormalized()) continue;
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function dequantize(options: DequantizeOptions = DEQUANTIZE_DEFAULTS): Transform {
   const resolvedOptions = assignDefaults(DEQUANTIZE_DEFAULTS, options);
 
@@ -87,6 +108,8 @@ export function dequantize(options: DequantizeOptions = DEQUANTIZE_DEFAULTS): Tr
       }
     }
 
-    document.disposeExtension('KHR_mesh_quantization');
+    if (!documentNeedsQuantization(document)) {
+      document.disposeExtension('KHR_mesh_quantization');
+    }
   });
 }

@@ -72,15 +72,18 @@ export class MeshyModelStore {
   }
 
   noteBinary(modelKey: string, binaryUrl: string, detectedAt = Date.now()): ModelCandidate {
-    if (this.activeCandidate?.modelKey !== modelKey) {
+    if (!this.activeCandidate) {
       return this.activateCandidate({ provider: 'meshy', modelKey, binaryUrl, detectedAt }).candidate;
+    }
+    if (this.activeCandidate.modelKey !== modelKey) {
+      return { provider: 'meshy', modelKey, generation: this.generation, binaryUrl, detectedAt };
     }
     this.activeCandidate = { ...this.activeCandidate, binaryUrl, detectedAt };
     return this.activeCandidate;
   }
 
   /** Cache any correlated result, but activate it only when identity still matches. */
-  acceptDecodedGlb(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now()): CapturedModelAsset | null {
+  acceptDecodedGlb(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now(), metadata?: CapturedModelAsset['metadata']): CapturedModelAsset | null {
     const cached: CachedAsset = {
       provider: 'meshy',
       modelKey,
@@ -88,6 +91,7 @@ export class MeshyModelStore {
       sourceUrl,
       buffer,
       byteLength: buffer.byteLength,
+      metadata,
     };
     this.glbCache.set(modelKey, cached);
     if (this.activeCandidate?.modelKey !== modelKey) return null;

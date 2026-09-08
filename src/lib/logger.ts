@@ -1,7 +1,7 @@
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 class Logger {
-  private enabled = true;
+  private enabled = false;
 
   setDebugEnabled(enabled: boolean) {
     this.enabled = enabled;
@@ -11,11 +11,12 @@ class Logger {
     if (arg === null || arg === undefined) return arg;
     if (typeof arg === 'string') {
       return arg
-        .replace(/([?&](?:Signature|token|auth|key|sig)=)[^&]+/gi, '$1[REDACTED]')
+        .replace(/(https?:\/\/[^\s?#]+)\?[^\s#]*/gi, '$1?[REDACTED]')
+        .replace(/([?&](?:Signature|token|auth|key|sig|credential)=)[^&\s]+/gi, '$1[REDACTED]')
         .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+/gi, '$1[REDACTED]');
     }
     if (typeof arg === 'object') {
-      if (arg instanceof Error) return arg;
+      if (arg instanceof Error) return { name: arg.name, message: this.sanitize(arg.message) };
       if (ArrayBuffer.isView(arg) || arg instanceof ArrayBuffer) {
         return `[Binary ${(arg as ArrayBuffer).byteLength ?? (arg as Uint8Array).byteLength} bytes]`;
       }

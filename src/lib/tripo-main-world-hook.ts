@@ -87,7 +87,7 @@ export function installTripoMainWorldHook() {
     }
   }
 
-  function handleDetectedUrl(url: string, previewUrl?: string) {
+  function handleDetectedUrl(url: string, previewUrl?: string, source: 'api-response' | 'network' = 'network') {
     const provider = findProvider(window.location.href) ?? tripoProvider;
     if (provider.isModelAsset(url)) {
       postToContent('tripo-glb-url-detected', {
@@ -96,6 +96,7 @@ export function installTripoMainWorldHook() {
         provider: provider.id,
         capturedAt: Date.now(),
         pageUrl: window.location.href,
+        source,
       });
     }
   }
@@ -138,7 +139,7 @@ export function installTripoMainWorldHook() {
           const thumbUrls = findThumbnailsInObject(json);
           const previewUrl = thumbUrls[0];
           for (const glbUrl of glbUrls) {
-            handleDetectedUrl(glbUrl, previewUrl);
+            handleDetectedUrl(glbUrl, previewUrl, 'api-response');
           }
           if (previewUrl && glbUrls.length === 0) {
             postToContent('tripo-preview-detected', {
@@ -175,7 +176,7 @@ export function installTripoMainWorldHook() {
             const thumbUrls = findThumbnailsInObject(json);
             const previewUrl = thumbUrls[0];
             for (const glbUrl of glbUrls) {
-              handleDetectedUrl(glbUrl, previewUrl);
+              handleDetectedUrl(glbUrl, previewUrl, 'api-response');
             }
             if (previewUrl && glbUrls.length === 0) {
               postToContent('tripo-preview-detected', {

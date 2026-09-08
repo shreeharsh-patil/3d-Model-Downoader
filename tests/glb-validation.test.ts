@@ -39,11 +39,12 @@ describe('GLB Validation', () => {
         },
       ],
       accessors: [
-        { count: 300, type: 'VEC3' }, // positions
-        { count: 900, type: 'SCALAR' }, // indices (300 triangles)
+        { componentType: 5126, count: 300, type: 'VEC3' }, // positions
+        { componentType: 5123, count: 900, type: 'SCALAR' }, // indices (300 triangles)
       ],
       materials: [{ name: 'Mat1' }, { name: 'Mat2' }],
       textures: [{ source: 0 }],
+      images: [{ uri: 'data:image/png;base64,iVBORw0KGgo=' }],
       animations: [{ name: 'Walk' }],
     };
 

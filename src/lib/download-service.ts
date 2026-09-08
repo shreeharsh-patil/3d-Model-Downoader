@@ -3,7 +3,6 @@ import { sanitizeFilename } from './filename';
 import { validateGlb } from './glb-validator';
 import { logger } from './logger';
 import { convertModel } from './model-converter';
-import { addDownloadToHistory } from './storage';
 import type { ExportFormat, WebsiteId } from './types';
 
 export interface DownloadOptions {
@@ -51,15 +50,21 @@ export async function executeDownload(
     logger.info('DownloadService', `Started download for ${finalFilename} (${targetBuffer.byteLength} bytes)`);
 
     // Record in history
-    await addDownloadToHistory({
-      modelName: modelName || finalFilename.replace(/\.[^.]+$/i, ''),
-      provider,
-      format: exportFormat,
-      filename: finalFilename,
-      size: targetBuffer.byteLength,
-    }).catch((err) => {
+    try {
+      const { browser } = await import('#imports');
+      await browser.runtime.sendMessage({
+        type: 'record-download',
+        item: {
+          modelName: modelName || finalFilename.replace(/\.[^.]+$/i, ''),
+          provider,
+          format: exportFormat,
+          filename: finalFilename,
+          size: targetBuffer.byteLength,
+        },
+      });
+    } catch (err) {
       logger.warn('DownloadService', 'Failed to add download to history', err);
-    });
+    }
 
     return {
       success: true,

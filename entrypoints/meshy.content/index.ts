@@ -16,7 +16,6 @@ import type { CapturedModelAsset, DetectedModel, DownloadJob, DownloaderSettings
 let injected = false;
 let lastDownloadAt: number | undefined;
 let activeAbortController: AbortController | null = null;
-let currentMetadata: ModelMetadata | undefined;
 const jobs = new DownloadJobController();
 let queuedFormat: ExportFormat | undefined;
 
@@ -50,7 +49,7 @@ function getPageState(): PageState {
     lastGlbSize: current?.byteLength,
     lastDownloadAt,
     status: current ? 'ready' : 'detecting',
-    metadata: currentMetadata,
+    metadata: current?.metadata,
     activeModelKey: meshyModelStore.currentModelKey,
     generation: meshyModelStore.currentGeneration,
     job: jobs.current ?? undefined,
@@ -73,7 +72,7 @@ async function syncWithBackground() {
         size: current.byteLength,
         status: 'ready',
         previewUrl,
-        metadata: currentMetadata,
+        metadata: current.metadata,
       }
     : undefined;
 
@@ -124,7 +123,7 @@ async function downloadModelWithTextureFallback(
   } else {
     const textureUrls = meshyModelStore.getTextureUrls(job.modelKey);
     // The legacy single-texture fallback is only unambiguous for one material.
-    if (textureUrls.length === 1 && (currentMetadata?.materialCount ?? 0) <= 1) {
+    if (textureUrls.length === 1 && (asset.metadata?.materialCount ?? 0) <= 1) {
       try {
         const texturePng = await fetchTexturePng(textureUrls[0]);
         if (abortController.signal.aborted || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
@@ -234,9 +233,14 @@ function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: strin
     return;
   }
 
-  currentMetadata = validation.metadata;
   const normalizedBuffer = normalizeQuantizedPositionsInGlb(buffer);
-  const cached = meshyModelStore.acceptDecodedGlb(normalizedBuffer, modelKey, sourceUrl, capturedAt);
+  const normalizedValidation = validateGlb(normalizedBuffer);
+  if (!normalizedValidation.valid) {
+    logger.warn('Meshy', 'Normalization produced invalid output; preserving the validated original.', normalizedValidation.reason);
+  }
+  const acceptedBuffer = normalizedValidation.valid ? normalizedBuffer : buffer;
+  const metadata = normalizedValidation.valid ? normalizedValidation.metadata : validation.metadata;
+  const cached = meshyModelStore.acceptDecodedGlb(acceptedBuffer, modelKey, sourceUrl, capturedAt, metadata);
   if (!cached) {
     logger.debug('Meshy', 'Cached late GLB without activating it', { modelKey });
     return;
@@ -268,7 +272,6 @@ function handleModelJsonDetected(url: string | undefined, explicitModelKey?: str
   if (isNew) {
     jobs.cancel();
     activeAbortController?.abort();
-    currentMetadata = undefined;
     notifyOverlay('model-changed', {
       generation,
       modelKey,

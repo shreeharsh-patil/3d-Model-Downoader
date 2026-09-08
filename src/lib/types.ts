@@ -30,6 +30,7 @@ export interface ModelCandidate {
   jsonUrl?: string;
   binaryUrl?: string;
   detectedAt: number;
+  detectionId?: string;
 }
 
 export interface CapturedModelAsset {
@@ -41,6 +42,7 @@ export interface CapturedModelAsset {
   bufferStatus: 'pending' | 'ready' | 'invalid' | 'released';
   buffer: ArrayBuffer;
   byteLength: number;
+  metadata?: ModelMetadata;
 }
 
 export interface DownloadJob {
@@ -140,6 +142,7 @@ export interface PageState {
   activeModelKey?: string;
   generation?: number;
   job?: DownloadJob;
+  progress?: number;
 }
 
 export interface TabState {
