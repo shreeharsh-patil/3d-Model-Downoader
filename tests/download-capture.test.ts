@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decodeModelBuffer, encodeModelBuffer } from '../src/lib/binary-message';
+import { decodeModelBuffer, encodeBufferSlice, encodeModelBuffer } from '../src/lib/binary-message';
 import { findDecodedGlb, installMeshyMainWorldHook } from '../src/lib/meshy-main-world-hook';
 import { CONTENT_SOURCE } from '../src/lib/messages';
 
@@ -130,6 +130,26 @@ describe('model capture and transport', () => {
     polyfetchAnchor.click();
     expect(nativeClick).toHaveBeenCalledTimes(2);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('correctly chunks and reassembles large binary buffers', () => {
+    // Verify multi-chunk slicing and exact byte-for-byte reassembly
+    const totalBytes = 50000;
+    const chunkSize = 16384;
+    const original = Uint8Array.from({ length: totalBytes }, (_, i) => (i * 7) % 256);
+
+    const totalChunks = Math.ceil(totalBytes / chunkSize);
+    const reassembled = new Uint8Array(totalBytes);
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, totalBytes);
+      const chunkBase64 = encodeBufferSlice(original.buffer, start, end);
+      const decodedChunk = decodeModelBuffer(chunkBase64);
+      reassembled.set(new Uint8Array(decodedChunk), start);
+    }
+
+    expect(reassembled).toEqual(original);
   });
 });
 

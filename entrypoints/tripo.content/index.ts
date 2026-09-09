@@ -305,6 +305,10 @@ async function downloadActiveModel(targetFormat?: ExportFormat) {
       ok: boolean;
       error?: string;
       bufferBase64?: string;
+      chunked?: boolean;
+      transferId?: string;
+      chunkSize?: number;
+      totalChunks?: number;
       byteLength?: number;
       filename?: string;
     };
@@ -312,9 +316,36 @@ async function downloadActiveModel(targetFormat?: ExportFormat) {
     if (!jobs.isCurrent(job, tripoModelStore.active?.modelKey, tripoModelStore.generation)) {
       return { ok: false, error: 'Model selection changed during download.' };
     }
-    if (!result?.ok || !result.bufferBase64) throw new Error(result?.error ?? `Failed to process ${provider.label} model.`);
+    if (!result?.ok) throw new Error(result?.error ?? `Failed to process ${provider.label} model.`);
 
-    let buffer = decodeModelBuffer(result.bufferBase64);
+    let buffer: ArrayBuffer;
+    if (result.chunked && result.transferId && result.totalChunks && result.byteLength) {
+      logger.info(provider.label, `Receiving large model (${result.byteLength} bytes in ${result.totalChunks} chunks)...`);
+      const fullBytes = new Uint8Array(result.byteLength);
+      const chunkSize = result.chunkSize || 8 * 1024 * 1024;
+
+      for (let i = 0; i < result.totalChunks; i++) {
+        if (!jobs.isCurrent(job, tripoModelStore.active?.modelKey, tripoModelStore.generation)) {
+          return { ok: false, error: 'Model selection changed during download.' };
+        }
+        const chunkRes = (await browser.runtime.sendMessage({
+          type: 'get-transfer-chunk',
+          transferId: result.transferId,
+          chunkIndex: i,
+        })) as { ok: boolean; chunkBase64?: string; error?: string };
+
+        if (!chunkRes?.ok || !chunkRes.chunkBase64) {
+          throw new Error(chunkRes?.error ?? `Failed to retrieve model chunk ${i + 1}/${result.totalChunks}`);
+        }
+        const chunkBuf = decodeModelBuffer(chunkRes.chunkBase64);
+        fullBytes.set(new Uint8Array(chunkBuf), i * chunkSize);
+      }
+      buffer = fullBytes.buffer;
+    } else if (result.bufferBase64) {
+      buffer = decodeModelBuffer(result.bufferBase64);
+    } else {
+      throw new Error(`Failed to process ${provider.label} model: no buffer data received.`);
+    }
     let settings: DownloaderSettings | undefined;
     try {
       settings = (await browser.runtime.sendMessage({ type: 'get-settings' })) as DownloaderSettings;

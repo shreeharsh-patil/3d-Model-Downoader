@@ -1,5 +1,5 @@
 import { browser, defineBackground } from '#imports';
-import { encodeModelBuffer } from '../src/lib/binary-message';
+import { DEFAULT_CHUNK_SIZE, encodeBufferSlice, encodeModelBuffer } from '../src/lib/binary-message';
 import { InvalidGlbError, UnsupportedProviderError } from '../src/lib/errors';
 import { logger } from '../src/lib/logger';
 import { isExtensionMessage } from '../src/lib/messages';
@@ -15,6 +15,21 @@ import {
 import { tabStateManager } from '../src/lib/tab-state';
 import { processTripoGlb } from '../src/lib/tripo-processing';
 import type { PageState, TabState, TextureFormat } from '../src/lib/types';
+
+interface ActiveTransfer {
+  buffer: ArrayBuffer;
+  createdAt: number;
+}
+const activeTransfers = new Map<string, ActiveTransfer>();
+
+function pruneStaleTransfers() {
+  const now = Date.now();
+  for (const [id, transfer] of activeTransfers.entries()) {
+    if (now - transfer.createdAt > 5 * 60 * 1000) {
+      activeTransfers.delete(id);
+    }
+  }
+}
 
 async function getActiveTab() {
   try {
@@ -216,13 +231,40 @@ export default defineBackground(() => {
       }
 
       return processTripoGlb(url, message.modelName, provider)
-        .then((result) => ({
-          ok: true,
-          bufferBase64: encodeModelBuffer(result.buffer),
-          byteLength: result.byteLength,
-          filename: result.filename,
-          validation: result.validation,
-        }))
+        .then((result) => {
+          // If buffer is small (<= 16MB), send it inline for fast single-roundtrip response
+          if (result.byteLength <= 16 * 1024 * 1024) {
+            return {
+              ok: true,
+              bufferBase64: encodeModelBuffer(result.buffer),
+              byteLength: result.byteLength,
+              filename: result.filename,
+              validation: result.validation,
+            };
+          }
+
+          // For large models (> 16MB), transfer via chunks so Chrome's 64MB IPC limit is never exceeded
+          pruneStaleTransfers();
+          const transferId = `xfer-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+          activeTransfers.set(transferId, {
+            buffer: result.buffer,
+            createdAt: Date.now(),
+          });
+
+          const chunkSize = DEFAULT_CHUNK_SIZE;
+          const totalChunks = Math.ceil(result.byteLength / chunkSize);
+
+          return {
+            ok: true,
+            chunked: true,
+            transferId,
+            chunkSize,
+            totalChunks,
+            byteLength: result.byteLength,
+            filename: result.filename,
+            validation: result.validation,
+          };
+        })
         .catch((error) => {
           logger.error('Background', 'Tripo processing failed', error);
           return {
@@ -230,6 +272,30 @@ export default defineBackground(() => {
             error: error instanceof Error ? error.message : String(error),
           };
         });
+    }
+
+    if (message.type === 'get-transfer-chunk') {
+      const { transferId, chunkIndex } = message;
+      const transfer = activeTransfers.get(transferId);
+      if (!transfer) {
+        return Promise.resolve({ ok: false, error: 'Transfer session expired or not found.' });
+      }
+      const chunkSize = DEFAULT_CHUNK_SIZE;
+      const start = chunkIndex * chunkSize;
+      const end = Math.min(start + chunkSize, transfer.buffer.byteLength);
+      const chunkBase64 = encodeBufferSlice(transfer.buffer, start, end);
+      const totalChunks = Math.ceil(transfer.buffer.byteLength / chunkSize);
+
+      if (chunkIndex === totalChunks - 1) {
+        setTimeout(() => activeTransfers.delete(transferId), 15000);
+      }
+
+      return Promise.resolve({
+        ok: true,
+        chunkBase64,
+        chunkIndex,
+        totalChunks,
+      });
     }
 
     if (message.type === 'trigger-download') {

@@ -67,7 +67,8 @@ export type ExtensionMessage =
   | { type: 'process-tripo-glb'; url: string; modelName?: string; provider?: import('./types').WebsiteId }
   | { type: 'process-model-glb'; url: string; modelName?: string; provider?: import('./types').WebsiteId }
   | { type: 'tab-model-updated'; payload: TabModelState }
-  | { type: 'trigger-download'; bufferBase64?: string; url?: string; filename: string; mimeType?: string };
+  | { type: 'trigger-download'; bufferBase64?: string; url?: string; filename: string; mimeType?: string }
+  | { type: 'get-transfer-chunk'; transferId: string; chunkIndex: number };
 
 export type ExtensionResponse =
   | { ok: true; data?: unknown; byteLength?: number }
