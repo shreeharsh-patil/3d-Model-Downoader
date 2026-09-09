@@ -1,7 +1,7 @@
 import { validateGlb } from '../glb-validator';
 import { LruModelCache, type LruCacheLimits } from '../lru-model-cache';
 import type { CapturedModelAsset, ModelCandidate } from '../types';
-import { mergeGlbAnimations } from './animation-merger';
+import { isMotionClipDoc, mergeGlbAnimations, parseGlbDocument } from './animation-merger';
 
 /** Removes query/fragment secrets while retaining the stable asset directory. */
 export function getModelKey(url: string | undefined, baseUrl = 'https://www.meshy.ai/'): string | undefined {
@@ -140,8 +140,39 @@ export class MeshyModelStore {
       bufferStatus: 'ready',
     };
 
-    if (meshCount > 0) {
-      // Mesh model received (character mesh, textures, skeleton)
+    const isMotionClip =
+      animationCount > 0 &&
+      (meshCount === 0 ||
+        (currentMetadata?.vertexCount ?? 0) < 2000 ||
+        buffer.byteLength < 350 * 1024 ||
+        Boolean(this.currentMeshAsset && (this.currentMeshAsset.metadata?.vertexCount ?? 0) > (currentMetadata?.vertexCount ?? 0) * 3) ||
+        Boolean(parseGlbDocument(buffer)?.gltf && isMotionClipDoc(parseGlbDocument(buffer)!.gltf, buffer.byteLength)));
+
+    if (isMotionClip) {
+      // Motion clip received (armature skeleton + animation clip, with optional preview dummy mannequin)
+      const clipKey = sourceUrl || `anim_${this.currentAnimAssets.size + 1}`;
+      this.currentAnimAssets.set(clipKey, rawAsset);
+
+      // If we already have the real character mesh, merge this animation into it!
+      if (this.currentMeshAsset) {
+        const mergeRes = mergeGlbAnimations(this.currentMeshAsset.buffer, buffer);
+        if (mergeRes.merged) {
+          const val = validateGlb(mergeRes.buffer);
+          if (val.valid) {
+            activeBuffer = mergeRes.buffer;
+            currentMetadata = val.metadata ?? this.currentMeshAsset.metadata;
+            this.currentMeshAsset = {
+              ...this.currentMeshAsset,
+              buffer: activeBuffer,
+              byteLength: activeBuffer.byteLength,
+              metadata: currentMetadata,
+              capturedAt,
+            };
+          }
+        }
+      }
+    } else {
+      // Real character mesh model received (character mesh, textures, skeleton)
       this.currentMeshAsset = rawAsset;
 
       // If animation clips were already captured for this model, merge them into the mesh!
@@ -163,29 +194,6 @@ export class MeshyModelStore {
             byteLength: activeBuffer.byteLength,
             metadata: currentMetadata,
           };
-        }
-      }
-    } else if (animationCount > 0) {
-      // Animation-only motion clip received (0 meshes, >0 animations)
-      const clipKey = sourceUrl || `anim_${this.currentAnimAssets.size + 1}`;
-      this.currentAnimAssets.set(clipKey, rawAsset);
-
-      // If we already have the character mesh, merge this animation into it!
-      if (this.currentMeshAsset) {
-        const mergeRes = mergeGlbAnimations(this.currentMeshAsset.buffer, buffer);
-        if (mergeRes.merged) {
-          const val = validateGlb(mergeRes.buffer);
-          if (val.valid) {
-            activeBuffer = mergeRes.buffer;
-            currentMetadata = val.metadata ?? this.currentMeshAsset.metadata;
-            this.currentMeshAsset = {
-              ...this.currentMeshAsset,
-              buffer: activeBuffer,
-              byteLength: activeBuffer.byteLength,
-              metadata: currentMetadata,
-              capturedAt,
-            };
-          }
         }
       }
     }

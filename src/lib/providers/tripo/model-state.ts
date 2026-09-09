@@ -45,7 +45,11 @@ export class TripoModelStore {
     if (!modelKey) return null;
     const hint = pageHint?.toLowerCase();
     const correlated = Boolean(hint && hint.length >= 4 && modelKey.toLowerCase().includes(hint));
-    const score = SOURCE_SCORE[input.source] + (correlated ? 100 : 0);
+    const isAnimated = /(?:anim|rig|motion|retarget)/i.test(input.url) ||
+      (input.metadata?.animationCount ?? 0) > 0 ||
+      (input.metadata?.skinCount ?? 0) > 0;
+    const animationBonus = isAnimated ? 60 : 0;
+    const score = SOURCE_SCORE[input.source] + (correlated ? 100 : 0) + animationBonus;
     const previous = this.candidates.get(modelKey);
     const candidate: TripoAssetCandidate = { ...previous, ...input, modelKey, score: Math.max(score, previous?.score ?? 0) };
     this.candidates.delete(modelKey);
@@ -57,9 +61,16 @@ export class TripoModelStore {
       return { activated: true, changed: false, candidate };
     }
 
+    const currentIsAnimated = Boolean(this.activeCandidate && (
+      /(?:anim|rig|motion|retarget)/i.test(this.activeCandidate.url) ||
+      (this.activeCandidate.metadata?.animationCount ?? 0) > 0 ||
+      (this.activeCandidate.metadata?.skinCount ?? 0) > 0
+    ));
+
     const shouldActivate = !this.activeCandidate ||
-      correlated ||
-      (input.source === 'api-response' && candidate.score > this.activeCandidate.score);
+      (isAnimated && !currentIsAnimated) ||
+      (candidate.score > this.activeCandidate.score) ||
+      (correlated && !currentIsAnimated);
     if (!shouldActivate) return { activated: false, changed: false, candidate };
 
     this.activeCandidate = candidate;

@@ -425,5 +425,65 @@ describe('Animated GLB Support', () => {
     expect(validation.metadata?.meshCount).toBe(1);
     expect(validation.metadata?.animationCount).toBe(2);
   });
+
+  it('MeshyModelStore correctly identifies dummy mannequin motion clips (Armature_meshData) and preserves the high-poly character mesh', () => {
+    const store = new MeshyModelStore();
+    const modelKey = 'https://assets.meshy.ai/tasks/task-mannequin-test';
+    store.activateCandidate({ provider: 'meshy', modelKey, detectedAt: 1 });
+
+    const characterMeshGlb = makeMeshAndRigGlb(); // Real character mesh
+    const dummyMotionGlb = createTestGlb({
+      meshes: [
+        {
+          name: 'Armature_meshData',
+          primitives: [{ attributes: { POSITION: 0 } }],
+        },
+      ],
+      nodes: [
+        { name: 'Armature_mesh', mesh: 0 },
+        { name: 'Hips', children: [2] },
+        { name: 'Spine' },
+        { name: 'Armature', children: [0, 1] },
+      ],
+      skins: [{ name: 'Armature', joints: [1, 2] }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 72 }],
+      accessors: [
+        { bufferView: 0, byteOffset: 0, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 0, byteOffset: 8, componentType: 5126, count: 2, type: 'VEC4' },
+        { bufferView: 0, byteOffset: 40, componentType: 5126, count: 2, type: 'VEC4' },
+      ],
+      animations: [
+        {
+          name: 'Running',
+          samplers: [
+            { input: 0, interpolation: 'LINEAR', output: 1 },
+            { input: 0, interpolation: 'LINEAR', output: 2 },
+          ],
+          channels: [
+            { sampler: 0, target: { node: 1, path: 'rotation' } },
+            { sampler: 1, target: { node: 2, path: 'rotation' } },
+          ],
+        },
+      ],
+    }, 72);
+
+    // 1. Character mesh arrives first
+    store.acceptDecodedGlb(characterMeshGlb, modelKey, `${modelKey}/model.meshy`);
+
+    // 2. Dummy mannequin motion clip arrives
+    store.acceptDecodedGlb(dummyMotionGlb, modelKey, `${modelKey}/motion.glb`);
+
+    expect(store.current).not.toBeNull();
+    // Character mesh must NOT have been replaced by the dummy mannequin!
+    expect(store.current?.metadata?.meshCount).toBe(1);
+    expect(store.current?.metadata?.animationCount).toBe(1);
+    expect(store.current?.metadata?.skinCount).toBe(1);
+
+    const doc = parseGlbDocument(store.current!.buffer);
+    expect(doc).not.toBeNull();
+    // The mesh in the merged GLB must be the character mesh, not Armature_meshData
+    expect(doc!.gltf.meshes?.[0]?.name).not.toBe('Armature_meshData');
+    expect(doc!.gltf.animations?.[0]?.name).toBe('Running');
+  });
 });
 

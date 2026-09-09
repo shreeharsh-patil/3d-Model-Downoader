@@ -48,12 +48,26 @@ describe('TripoModelStore', () => {
     expect(store.active?.previewUrl).toContain('preview.webp');
   });
 
-  it('rejects metadata from a stale model generation', () => {
+  it('prioritizes animated or rigged GLB assets over static base models', () => {
     const store = new TripoModelStore();
-    const first = store.consider({ url: 'https://cdn.example.com/tripo/a.glb', detectedAt: 1, source: 'api-response' })!;
-    const firstGeneration = store.generation;
-    store.clear();
+    // Static base model arrives first
+    const staticModel = store.consider({
+      url: 'https://cdn.example.com/tripo/demon-warrior/model.glb',
+      detectedAt: 1,
+      source: 'api-response',
+    }, 'demon-warrior');
 
-    expect(store.updateMetadata(first.candidate.modelKey, firstGeneration, { meshCount: 1 })).toBe(false);
+    expect(staticModel?.activated).toBe(true);
+    expect(store.active?.url).toContain('model.glb');
+
+    // Auto-rigged / animated GLB arrives via network or api-response
+    const animModel = store.consider({
+      url: 'https://cdn.example.com/tripo/demon-warrior/animation.glb',
+      detectedAt: 2,
+      source: 'network',
+    }, 'demon-warrior');
+
+    expect(animModel?.activated).toBe(true);
+    expect(store.active?.url).toContain('animation.glb');
   });
 });

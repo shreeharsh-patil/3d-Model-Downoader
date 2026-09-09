@@ -225,6 +225,31 @@ function isDuplicateAnimation(
   return false;
 }
 
+export function isMotionClipDoc(gltf: GltfDocument, binLength = 0): boolean {
+  const animCount = gltf.animations?.length ?? 0;
+  if (animCount === 0) return false;
+  const meshCount = gltf.meshes?.length ?? 0;
+  if (meshCount === 0) return true;
+  if (meshCount === 1) {
+    const mesh = gltf.meshes![0];
+    const name = (mesh.name ?? '').toLowerCase();
+    if (
+      name.includes('meshdata') ||
+      name.includes('armature') ||
+      name.includes('dummy') ||
+      name.includes('mannequin') ||
+      name.includes('preview')
+    ) {
+      return true;
+    }
+    const posAccIdx = mesh.primitives?.[0]?.attributes?.POSITION;
+    const vertexCount = posAccIdx !== undefined ? gltf.accessors?.[posAccIdx]?.count ?? 0 : 0;
+    if (vertexCount > 0 && vertexCount < 2000) return true;
+    if (binLength > 0 && binLength < 350 * 1024) return true;
+  }
+  return false;
+}
+
 /**
  * Maps animation source nodes to the corresponding target skeleton/mesh nodes in baseGltf.
  */
@@ -235,6 +260,16 @@ function buildNodeIndexMap(
   const nodeMap = new Map<number, number>();
   const baseNodes = baseGltf.nodes ?? [];
   const animNodes = animGltf.nodes ?? [];
+
+  // Identify dummy preview mesh nodes in animGltf to avoid copying them
+  const dummyMeshNodeIndices = new Set<number>();
+  if (isMotionClipDoc(animGltf)) {
+    for (let i = 0; i < animNodes.length; i++) {
+      if (animNodes[i].mesh !== undefined) {
+        dummyMeshNodeIndices.add(i);
+      }
+    }
+  }
 
   // 1. Build lookup tables for base nodes, prioritizing skin joints
   const exactBaseNodeMap = new Map<string, number>();
@@ -285,8 +320,15 @@ function buildNodeIndexMap(
   const baseJoints = baseGltf.skins?.[0]?.joints;
   const animJoints = animGltf.skins?.[0]?.joints;
 
+  // Track newly created node indices
+  const newlyCreatedNodeIndices: number[] = [];
+
   // 2. Map each node in animNodes
   for (let animIdx = 0; animIdx < animNodes.length; animIdx += 1) {
+    if (dummyMeshNodeIndices.has(animIdx)) {
+      continue;
+    }
+
     const animNode = animNodes[animIdx];
     const name = animNode?.name;
 
@@ -331,18 +373,49 @@ function buildNodeIndexMap(
     const newIdx = baseNodes.length;
     const newNode: GltfNode = {
       name: name || `Bone_${animIdx}`,
-      translation: animNode.translation,
-      rotation: animNode.rotation,
-      scale: animNode.scale,
+      translation: animNode.translation ? [...animNode.translation] : undefined,
+      rotation: animNode.rotation ? [...animNode.rotation] : undefined,
+      scale: animNode.scale ? [...animNode.scale] : undefined,
     };
     baseNodes.push(newNode);
-
-    if (baseGltf.scene !== undefined && baseGltf.scenes?.[baseGltf.scene]) {
-      baseGltf.scenes[baseGltf.scene].nodes ??= [];
-      baseGltf.scenes[baseGltf.scene].nodes!.push(newIdx);
-    }
-
+    newlyCreatedNodeIndices.push(newIdx);
     nodeMap.set(animIdx, newIdx);
+  }
+
+  // 3. Reconstruct parent-child hierarchy for copied nodes
+  for (let animIdx = 0; animIdx < animNodes.length; animIdx += 1) {
+    if (dummyMeshNodeIndices.has(animIdx)) continue;
+    const animNode = animNodes[animIdx];
+    const targetIdx = nodeMap.get(animIdx);
+    if (targetIdx !== undefined && animNode.children) {
+      const mappedChildren = animNode.children
+        .map((c) => nodeMap.get(c))
+        .filter((c): c is number => c !== undefined && !dummyMeshNodeIndices.has(c));
+      if (mappedChildren.length > 0) {
+        baseNodes[targetIdx].children = mappedChildren;
+      }
+    }
+  }
+
+  // 4. Attach only newly created ROOT nodes to baseGltf scene
+  const childSet = new Set<number>();
+  for (const node of baseNodes) {
+    if (node.children) {
+      for (const child of node.children) {
+        childSet.add(child);
+      }
+    }
+  }
+
+  const activeSceneIndex = baseGltf.scene ?? 0;
+  if (baseGltf.scenes?.[activeSceneIndex]) {
+    baseGltf.scenes[activeSceneIndex].nodes ??= [];
+    const sceneNodes = baseGltf.scenes[activeSceneIndex].nodes!;
+    for (const newIdx of newlyCreatedNodeIndices) {
+      if (!childSet.has(newIdx) && !sceneNodes.includes(newIdx)) {
+        sceneNodes.push(newIdx);
+      }
+    }
   }
 
   baseGltf.nodes = baseNodes;
@@ -373,6 +446,8 @@ export function mergeGlbAnimations(
 
     const meshesA = parsedA.gltf.meshes?.length ?? 0;
     const meshesB = parsedB.gltf.meshes?.length ?? 0;
+    const isClipA = isMotionClipDoc(parsedA.gltf, parsedA.bin.byteLength);
+    const isClipB = isMotionClipDoc(parsedB.gltf, parsedB.bin.byteLength);
 
     // Determine target mesh GLTF and source animation GLTF
     let targetMeshGltf: GltfDocument;
@@ -380,14 +455,24 @@ export function mergeGlbAnimations(
     let sourceAnimGltf: GltfDocument;
     let sourceAnimBin: Uint8Array;
 
-    if (meshesA === 0 && meshesB > 0) {
+    if (isClipA && !isClipB) {
       // Swapped: Buffer B has the character mesh, Buffer A has the animation
       targetMeshGltf = structuredClone(parsedB.gltf);
       targetMeshBin = parsedB.bin;
       sourceAnimGltf = parsedA.gltf;
       sourceAnimBin = parsedA.bin;
+    } else if (isClipB && !isClipA) {
+      // Buffer A has the character mesh, Buffer B has the animation
+      targetMeshGltf = structuredClone(parsedA.gltf);
+      targetMeshBin = parsedA.bin;
+      sourceAnimGltf = parsedB.gltf;
+      sourceAnimBin = parsedB.bin;
+    } else if (meshesA === 0 && meshesB > 0) {
+      targetMeshGltf = structuredClone(parsedB.gltf);
+      targetMeshBin = parsedB.bin;
+      sourceAnimGltf = parsedA.gltf;
+      sourceAnimBin = parsedA.bin;
     } else {
-      // Standard: Buffer A has the character mesh, Buffer B has the animation
       targetMeshGltf = structuredClone(parsedA.gltf);
       targetMeshBin = parsedA.bin;
       sourceAnimGltf = parsedB.gltf;
@@ -396,7 +481,6 @@ export function mergeGlbAnimations(
 
     const sourceAnimations = sourceAnimGltf.animations ?? [];
     if (sourceAnimations.length === 0) {
-      // No animations in source
       return {
         buffer: baseGlbBuffer,
         merged: false,
@@ -448,10 +532,63 @@ export function mergeGlbAnimations(
       targetMeshGltf.accessors.push(newAcc);
     }
 
-    // 4. Node mapping
+    // 4. Node mapping & hierarchy reconstruction
     const nodeMap = buildNodeIndexMap(targetMeshGltf, sourceAnimGltf);
 
-    // 5. Animations mapping
+    // 5. Skins mapping
+    targetMeshGltf.skins ??= [];
+    const baseSkinsCount = targetMeshGltf.skins.length;
+    for (const skin of sourceAnimGltf.skins ?? []) {
+      const mappedJoints = (skin.joints ?? [])
+        .map((j) => nodeMap.get(j))
+        .filter((j): j is number => j !== undefined);
+
+      if (mappedJoints.length > 0) {
+        // Check if an equivalent skin already exists in target
+        const existingSkin = targetMeshGltf.skins.find(
+          (s) =>
+            (s.name && skin.name && s.name === skin.name) ||
+            (s.joints.length === mappedJoints.length && s.joints.every((j, i) => j === mappedJoints[i])),
+        );
+
+        if (existingSkin) {
+          if (existingSkin.inverseBindMatrices === undefined && skin.inverseBindMatrices !== undefined) {
+            existingSkin.inverseBindMatrices = baseAccessorsCount + skin.inverseBindMatrices;
+          }
+          continue;
+        }
+
+        const newSkin: GltfSkin = {
+          name: skin.name || 'Armature',
+          joints: mappedJoints,
+        };
+        if (skin.inverseBindMatrices !== undefined) {
+          newSkin.inverseBindMatrices = baseAccessorsCount + skin.inverseBindMatrices;
+        }
+        if (skin.skeleton !== undefined) {
+          newSkin.skeleton = nodeMap.get(skin.skeleton);
+        }
+        targetMeshGltf.skins.push(newSkin);
+      }
+    }
+
+    // Link skin to mesh node if mesh primitives have JOINTS_0 and WEIGHTS_0
+    if (targetMeshGltf.skins.length > baseSkinsCount) {
+      const newSkinIndex = baseSkinsCount;
+      for (const node of targetMeshGltf.nodes ?? []) {
+        if (node.mesh !== undefined && node.skin === undefined) {
+          const mesh = targetMeshGltf.meshes?.[node.mesh];
+          const hasSkinAttributes = mesh?.primitives?.some(
+            (p) => p.attributes?.JOINTS_0 !== undefined && p.attributes?.WEIGHTS_0 !== undefined,
+          );
+          if (hasSkinAttributes) {
+            node.skin = newSkinIndex;
+          }
+        }
+      }
+    }
+
+    // 6. Animations mapping
     targetMeshGltf.animations ??= [];
     let addedCount = 0;
 
@@ -513,7 +650,7 @@ export function mergeGlbAnimations(
       };
     }
 
-    // 6. Merge extensions
+    // 7. Merge extensions
     if (sourceAnimGltf.extensionsUsed) {
       targetMeshGltf.extensionsUsed = Array.from(
         new Set([...(targetMeshGltf.extensionsUsed ?? []), ...sourceAnimGltf.extensionsUsed]),
@@ -525,10 +662,10 @@ export function mergeGlbAnimations(
       );
     }
 
-    // 7. Update buffers
+    // 8. Update buffers
     targetMeshGltf.buffers = [{ byteLength: mergedBin.byteLength }];
 
-    // 8. Rebuild GLB
+    // 9. Rebuild GLB
     const mergedGlb = buildGlbFromDocument(targetMeshGltf, mergedBin);
     const validation = validateGlb(mergedGlb);
 

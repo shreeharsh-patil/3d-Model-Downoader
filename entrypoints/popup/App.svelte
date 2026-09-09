@@ -165,6 +165,13 @@
   $: modelSize = tabState?.model?.size ?? tabState?.page?.lastGlbSize;
   $: modelName = tabState?.model?.name ?? tabState?.page?.modelName ?? 'Current 3D Model';
   $: previewUrl = tabState?.model?.previewUrl ?? tabState?.previewUrl ?? tabState?.page?.previewUrl;
+  $: isAnimated = Boolean(
+    (tabState?.model?.metadata?.animationCount ?? 0) > 0 ||
+    (tabState?.page?.metadata?.animationCount ?? 0) > 0 ||
+    (tabState?.model?.metadata?.skinCount ?? 0) > 0 ||
+    (tabState?.page?.metadata?.skinCount ?? 0) > 0 ||
+    /(?:animation|animate|rigging|auto-rigging|motion)/i.test(tabState?.pageUrl ?? '')
+  );
 
   $: if (previewUrl !== lastPreviewUrl) {
     lastPreviewUrl = previewUrl || '';
@@ -414,6 +421,9 @@
             {#if modelSize}
               <span class="badge size-badge">{formatBytes(modelSize)}</span>
             {/if}
+            {#if isAnimated}
+              <span class="badge anim-badge">▶ Animated</span>
+            {/if}
             <span class="status-indicator">
               <span class="status-dot"></span>
               Ready to download
@@ -487,6 +497,11 @@
             ZIP
           </button>
         </div>
+        {#if isAnimated && selectedFormat !== 'glb'}
+          <div class="format-warning">
+            ⚠️ <strong>{selectedFormat.toUpperCase()}</strong> does not support animations or skeletons. Switch to <strong>GLB</strong> to play animations in Blender.
+          </div>
+        {/if}
       </div>
 
       <!-- Primary Action -->
@@ -842,6 +857,24 @@
   .size-badge {
     background: #1f2937;
     color: #d1d5db;
+  }
+
+  .anim-badge {
+    background: rgba(168, 85, 247, 0.2);
+    color: #c084fc;
+    border: 1px solid rgba(168, 85, 247, 0.4);
+    font-weight: 600;
+  }
+
+  .format-warning {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: #fcd34d;
+    font-size: 11.5px;
+    line-height: 1.4;
   }
 
   .status-indicator {

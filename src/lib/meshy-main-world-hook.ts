@@ -103,23 +103,28 @@ export function installMeshyMainWorldHook() {
   let lastDecodedAnim: { buffer: ArrayBuffer; candidate: DetectionRecord } | undefined;
   const workerRequests = new WeakMap<Worker, WorkerRequestRecord[]>();
 
-  function inspectGlbContent(buffer: ArrayBuffer): { hasMeshes: boolean; hasAnimations: boolean } {
+  function inspectGlbContent(buffer: ArrayBuffer): { hasMeshes: boolean; hasAnimations: boolean; isMotionClip: boolean } {
     try {
-      if (buffer.byteLength < 20) return { hasMeshes: false, hasAnimations: false };
+      if (buffer.byteLength < 20) return { hasMeshes: false, hasAnimations: false, isMotionClip: false };
       const view = new DataView(buffer);
       const jsonLen = view.getUint32(12, true);
       if (jsonLen > 0 && jsonLen <= buffer.byteLength - 20) {
         const slice = new Uint8Array(buffer, 20, Math.min(jsonLen, 8192));
         const text = new TextDecoder().decode(slice);
+        const hasAnimations = /"animations"\s*:\s*\[\s*\{/u.test(text) || text.includes('"animations":');
+        const hasMeshes = /"meshes"\s*:\s*\[\s*\{/u.test(text) || text.includes('"meshes":');
+        const isDummyMannequin = text.includes('meshData') || text.includes('dummy') || text.includes('Armature_mesh');
+        const isMotionClip = hasAnimations && (buffer.byteLength < 350 * 1024 || isDummyMannequin || !hasMeshes);
         return {
-          hasMeshes: /"meshes"\s*:\s*\[\s*\{/u.test(text) || text.includes('"meshes":'),
-          hasAnimations: /"animations"\s*:\s*\[\s*\{/u.test(text) || text.includes('"animations":'),
+          hasMeshes: hasMeshes && !isDummyMannequin,
+          hasAnimations,
+          isMotionClip,
         };
       }
     } catch {
       // ignore
     }
-    return { hasMeshes: true, hasAnimations: false };
+    return { hasMeshes: true, hasAnimations: false, isMotionClip: false };
   }
 
   function recordWorkerRequest(worker: Worker, message: unknown) {
@@ -183,12 +188,12 @@ export function installMeshyMainWorldHook() {
           };
       const record = { buffer: payload.data.slice(0), candidate: candidateToSave };
       lastDecoded = record;
-      const { hasMeshes, hasAnimations } = inspectGlbContent(payload.data);
-      if (hasMeshes) {
-        lastDecodedMesh = record;
-      }
-      if (hasAnimations) {
+      const { hasMeshes, hasAnimations, isMotionClip } = inspectGlbContent(payload.data);
+      if (isMotionClip || hasAnimations) {
         lastDecodedAnim = record;
+      }
+      if (hasMeshes && !isMotionClip) {
+        lastDecodedMesh = record;
       }
     }
     try {
