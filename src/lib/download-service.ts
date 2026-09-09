@@ -97,18 +97,20 @@ export async function executeDownload(
   // Record in history
   try {
     const { browser } = await import('#imports');
-    await browser.runtime.sendMessage({
-      type: 'record-download',
-      item: {
-        modelName: modelName || finalFilename.replace(/\.[^.]+$/i, ''),
-        provider,
-        format: exportFormat,
-        filename: finalFilename,
-        size: targetBuffer.byteLength,
-      },
-    });
+    if (browser?.runtime?.id) {
+      await browser.runtime.sendMessage({
+        type: 'record-download',
+        item: {
+          modelName: modelName || finalFilename.replace(/\.[^.]+$/i, ''),
+          provider,
+          format: exportFormat,
+          filename: finalFilename,
+          size: targetBuffer.byteLength,
+        },
+      });
+    }
   } catch (err) {
-    logger.warn('DownloadService', 'Failed to add download to history', err);
+    logger.debug('DownloadService', 'Failed to add download to history (tab may need refresh)', err);
   }
 
   return {
