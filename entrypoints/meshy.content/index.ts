@@ -242,6 +242,16 @@ async function startModelDownload(targetFormat?: ExportFormat): Promise<{ ok: bo
   queuedFormat = targetFormat;
 
   if (current?.buffer) {
+    // If current model only has animations and 0 meshes, queue and request the full mesh to merge
+    if ((current.metadata?.meshCount ?? 0) === 0 && (current.metadata?.animationCount ?? 0) > 0) {
+      notifyOverlay('download-pending', {
+        generation: job.generation,
+        modelKey: job.modelKey,
+      });
+      window.postMessage({ source: CONTENT_SOURCE, type: 'request-model-buffer', modelKey: job.modelKey }, '*');
+      return { ok: true, queued: true };
+    }
+
     try {
       const res = await downloadModelWithTextureFallback(current, job, targetFormat);
       if (!res) {
@@ -312,6 +322,12 @@ function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: strin
   void syncWithBackground();
 
   if (job?.status === 'queued' && jobs.isCurrent(job)) {
+    // If this is an animation-only clip and character mesh is not yet merged, wait for the mesh
+    if ((cached.metadata?.meshCount ?? 0) === 0 && (cached.metadata?.animationCount ?? 0) > 0) {
+      logger.info('Meshy', 'Captured animation clip; waiting for character mesh before completing download.');
+      window.postMessage({ source: CONTENT_SOURCE, type: 'request-model-buffer', modelKey }, '*');
+      return;
+    }
     void downloadModelWithTextureFallback(cached, job, queuedFormat);
   }
 }

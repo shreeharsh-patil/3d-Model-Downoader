@@ -1,5 +1,7 @@
+import { validateGlb } from '../glb-validator';
 import { LruModelCache, type LruCacheLimits } from '../lru-model-cache';
 import type { CapturedModelAsset, ModelCandidate } from '../types';
+import { mergeGlbAnimations } from './animation-merger';
 
 /** Removes query/fragment secrets while retaining the stable asset directory. */
 export function getModelKey(url: string | undefined, baseUrl = 'https://www.meshy.ai/'): string | undefined {
@@ -20,6 +22,8 @@ export class MeshyModelStore {
   private activeCandidate: ModelCandidate | null = null;
   private readonly glbCache: LruModelCache<CachedAsset>;
   private readonly textureUrls = new Map<string, Set<string>>();
+  private currentMeshAsset: CapturedModelAsset | null = null;
+  private readonly currentAnimAssets = new Map<string, CapturedModelAsset>();
   private generation = 0;
 
   constructor(cacheLimits?: LruCacheLimits) {
@@ -71,6 +75,8 @@ export class MeshyModelStore {
     if (isNew) {
       this.generation += 1;
       this.currentGlb = null;
+      this.currentMeshAsset = null;
+      this.currentAnimAssets.clear();
     }
     const candidate: ModelCandidate = {
       ...input,
@@ -101,15 +107,97 @@ export class MeshyModelStore {
   }
 
   /** Cache any correlated result, and activate it for immediate download. */
-  acceptDecodedGlb(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now(), metadata?: CapturedModelAsset['metadata']): CapturedModelAsset {
-    const cached: CachedAsset = {
+  acceptDecodedGlb(
+    buffer: ArrayBuffer,
+    modelKey: string,
+    sourceUrl?: string,
+    capturedAt = Date.now(),
+    metadata?: CapturedModelAsset['metadata'],
+  ): CapturedModelAsset {
+    let currentMetadata = metadata;
+    if (!currentMetadata) {
+      const validation = validateGlb(buffer);
+      if (validation.valid && validation.metadata) {
+        currentMetadata = validation.metadata;
+      }
+    }
+
+    const meshCount = currentMetadata?.meshCount ?? 0;
+    const animationCount = currentMetadata?.animationCount ?? 0;
+
+    let activeBuffer = buffer;
+
+    // Build the raw incoming asset
+    const rawAsset: CapturedModelAsset = {
       provider: 'meshy',
       modelKey,
       capturedAt,
       sourceUrl,
       buffer,
       byteLength: buffer.byteLength,
-      metadata,
+      metadata: currentMetadata,
+      generation: this.activeCandidate?.generation ?? this.generation,
+      bufferStatus: 'ready',
+    };
+
+    if (meshCount > 0) {
+      // Mesh model received (character mesh, textures, skeleton)
+      this.currentMeshAsset = rawAsset;
+
+      // If animation clips were already captured for this model, merge them into the mesh!
+      if (this.currentAnimAssets.size > 0) {
+        let mergedBuffer = this.currentMeshAsset.buffer;
+        for (const animAsset of this.currentAnimAssets.values()) {
+          const mergeRes = mergeGlbAnimations(mergedBuffer, animAsset.buffer);
+          if (mergeRes.merged) {
+            mergedBuffer = mergeRes.buffer;
+          }
+        }
+        const val = validateGlb(mergedBuffer);
+        if (val.valid) {
+          activeBuffer = mergedBuffer;
+          currentMetadata = val.metadata ?? currentMetadata;
+          this.currentMeshAsset = {
+            ...this.currentMeshAsset,
+            buffer: activeBuffer,
+            byteLength: activeBuffer.byteLength,
+            metadata: currentMetadata,
+          };
+        }
+      }
+    } else if (animationCount > 0) {
+      // Animation-only motion clip received (0 meshes, >0 animations)
+      const clipKey = sourceUrl || `anim_${this.currentAnimAssets.size + 1}`;
+      this.currentAnimAssets.set(clipKey, rawAsset);
+
+      // If we already have the character mesh, merge this animation into it!
+      if (this.currentMeshAsset) {
+        const mergeRes = mergeGlbAnimations(this.currentMeshAsset.buffer, buffer);
+        if (mergeRes.merged) {
+          const val = validateGlb(mergeRes.buffer);
+          if (val.valid) {
+            activeBuffer = mergeRes.buffer;
+            currentMetadata = val.metadata ?? this.currentMeshAsset.metadata;
+            this.currentMeshAsset = {
+              ...this.currentMeshAsset,
+              buffer: activeBuffer,
+              byteLength: activeBuffer.byteLength,
+              metadata: currentMetadata,
+              capturedAt,
+            };
+          }
+        }
+      }
+    }
+
+    const cached: CachedAsset = {
+      provider: 'meshy',
+      modelKey,
+      capturedAt,
+      sourceUrl,
+      buffer: activeBuffer,
+      byteLength: activeBuffer.byteLength,
+      metadata: currentMetadata,
     };
     this.glbCache.set(modelKey, cached);
     if (this.activeCandidate && this.activeCandidate.modelKey !== modelKey) {
@@ -164,6 +252,8 @@ export class MeshyModelStore {
     this.generation += 1;
     this.currentGlb = null;
     this.activeCandidate = null;
+    this.currentMeshAsset = null;
+    this.currentAnimAssets.clear();
   }
 
   dispose(): void {

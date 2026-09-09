@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { GLB_JSON_CHUNK_TYPE, GLB_MAGIC, GLB_VERSION, validateGlb } from '../src/lib/glb-validator';
+import { buildGlbFromDocument, mergeGlbAnimations, normalizeBoneName, parseGlbDocument } from '../src/lib/meshy/animation-merger';
 import { normalizeQuantizedPositionsInGlb, parseGlb } from '../src/lib/meshy/gltf-normalizer';
 import { getMeshyPageModelHint, isMeshyModelKeyCorrelatedWithPage } from '../src/lib/meshy/model-correlation';
+import { MeshyModelStore } from '../src/lib/meshy/model-state';
 import { meshyProvider } from '../src/lib/providers/meshy/meshy-provider';
 
 function createValidGlbBuffer(gltfJson: Record<string, unknown> = {}): ArrayBuffer {
@@ -208,4 +210,220 @@ describe('Animated GLB Support', () => {
       animPageUrl,
     )).toBe(true);
   });
+
+  it('normalizes bone names across different rigging naming conventions', () => {
+    expect(normalizeBoneName('mixamorig:Hips')).toBe('hips');
+    expect(normalizeBoneName('Hips')).toBe('hips');
+    expect(normalizeBoneName('mixamorig_Hips')).toBe('hips');
+    expect(normalizeBoneName('DEF-Hips')).toBe('hips');
+    expect(normalizeBoneName('Armature|LeftUpLeg')).toBe('leftupleg');
+    expect(normalizeBoneName('Left_Up_Leg')).toBe('leftupleg');
+    expect(normalizeBoneName('Bip01_Pelvis')).toBe('pelvis');
+    expect(normalizeBoneName('mixamorig:Spine1')).toBe('spine1');
+    expect(normalizeBoneName('')).toBe('');
+    expect(normalizeBoneName(undefined)).toBe('');
+  });
+
+  function createTestGlb(gltf: Record<string, unknown>, binLength = 64): ArrayBuffer {
+    const bin = new Uint8Array(binLength);
+    const gltfDoc = {
+      asset: { version: '2.0' },
+      buffers: [{ byteLength: binLength }],
+      ...gltf,
+    };
+    return buildGlbFromDocument(gltfDoc as any, bin);
+  }
+
+  function makeMeshAndRigGlb(): ArrayBuffer {
+    return createTestGlb({
+      meshes: [
+        {
+          primitives: [
+            {
+              attributes: {
+                POSITION: 0,
+                JOINTS_0: 1,
+                WEIGHTS_0: 2,
+              },
+            },
+          ],
+        },
+      ],
+      nodes: [
+        { name: 'CharacterMesh', mesh: 0 },
+        { name: 'mixamorig:Hips' },
+        { name: 'mixamorig:Spine' },
+      ],
+      skins: [
+        { joints: [1, 2] },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: 64 },
+      ],
+      accessors: [
+        { bufferView: 0, byteOffset: 0, componentType: 5126, count: 2, type: 'VEC3' },
+        { bufferView: 0, byteOffset: 24, componentType: 5121, count: 2, type: 'VEC4' },
+        { bufferView: 0, byteOffset: 32, componentType: 5126, count: 2, type: 'VEC4' },
+      ],
+    }, 64);
+  }
+
+  function makeMotionClipGlb(animName = 'Dance'): ArrayBuffer {
+    return createTestGlb({
+      nodes: [
+        { name: 'Hips' },
+        { name: 'Spine' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: 72 },
+      ],
+      accessors: [
+        { bufferView: 0, byteOffset: 0, componentType: 5126, count: 2, type: 'SCALAR' }, // timestamps (2 * 4 = 8 bytes)
+        { bufferView: 0, byteOffset: 8, componentType: 5126, count: 2, type: 'VEC4' }, // rotations for Hips (2 * 16 = 32 bytes, offset 8..40)
+        { bufferView: 0, byteOffset: 40, componentType: 5126, count: 2, type: 'VEC4' }, // rotations for Spine (2 * 16 = 32 bytes, offset 40..72)
+      ],
+      animations: [
+        {
+          name: animName,
+          samplers: [
+            { input: 0, interpolation: 'LINEAR', output: 1 },
+            { input: 0, interpolation: 'LINEAR', output: 2 },
+          ],
+          channels: [
+            { sampler: 0, target: { node: 0, path: 'rotation' } }, // targets node 0 ('Hips')
+            { sampler: 1, target: { node: 1, path: 'rotation' } }, // targets node 1 ('Spine')
+          ],
+        },
+      ],
+    }, 72);
+  }
+
+  it('merges a character mesh GLB and motion clip GLB into a single animated GLB with remapped bone channels', () => {
+    const meshGlb = makeMeshAndRigGlb();
+    const animGlb = makeMotionClipGlb('Dance');
+
+    const result = mergeGlbAnimations(meshGlb, animGlb);
+
+    expect(result.merged).toBe(true);
+    expect(result.meshCount).toBe(1);
+    expect(result.animationCount).toBe(1);
+
+    const validation = validateGlb(result.buffer);
+    expect(validation.valid).toBe(true);
+    expect(validation.metadata?.meshCount).toBe(1);
+    expect(validation.metadata?.animationCount).toBe(1);
+    expect(validation.metadata?.skinCount).toBe(1);
+
+    const parsed = parseGlbDocument(result.buffer);
+    expect(parsed).not.toBeNull();
+    const anim = parsed!.gltf.animations![0];
+    expect(anim.name).toBe('Dance');
+    // Channel 0 (was node 0 'Hips') must map to node 1 ('mixamorig:Hips' in base)
+    expect(anim.channels[0].target.node).toBe(1);
+    // Channel 1 (was node 1 'Spine') must map to node 2 ('mixamorig:Spine' in base)
+    expect(anim.channels[1].target.node).toBe(2);
+
+    // Sampler input/output accessors must be remapped by base accessor count (3)
+    expect(anim.samplers[0].input).toBe(3);
+    expect(anim.samplers[0].output).toBe(4);
+    expect(anim.samplers[1].input).toBe(3);
+    expect(anim.samplers[1].output).toBe(5);
+  });
+
+  it('handles swapped parameter order when merging mesh and animation', () => {
+    const meshGlb = makeMeshAndRigGlb();
+    const animGlb = makeMotionClipGlb('Walk');
+
+    // Pass animGlb as first argument and meshGlb as second argument
+    const result = mergeGlbAnimations(animGlb, meshGlb);
+
+    expect(result.merged).toBe(true);
+    expect(result.meshCount).toBe(1);
+    expect(result.animationCount).toBe(1);
+
+    const validation = validateGlb(result.buffer);
+    expect(validation.valid).toBe(true);
+    expect(validation.metadata?.meshCount).toBe(1);
+    expect(validation.metadata?.animationCount).toBe(1);
+  });
+
+  it('MeshyModelStore automatically merges motion clips with character meshes when mesh arrives first', () => {
+    const store = new MeshyModelStore();
+    const modelKey = 'https://assets.meshy.ai/tasks/task-anim-test-1';
+    store.activateCandidate({ provider: 'meshy', modelKey, detectedAt: 1 });
+
+    const meshGlb = makeMeshAndRigGlb();
+    const animGlb = makeMotionClipGlb('Run');
+
+    // 1. Mesh arrives
+    store.acceptDecodedGlb(meshGlb, modelKey, `${modelKey}/model.meshy`);
+    expect(store.current).not.toBeNull();
+    expect(store.current?.metadata?.meshCount).toBe(1);
+    expect(store.current?.metadata?.animationCount).toBe(0);
+
+    // 2. Animation clip arrives
+    store.acceptDecodedGlb(animGlb, modelKey, `${modelKey}/animation.glb`);
+    expect(store.current).not.toBeNull();
+    // The current GLB must now contain BOTH the mesh AND the animation!
+    expect(store.current?.metadata?.meshCount).toBe(1);
+    expect(store.current?.metadata?.animationCount).toBe(1);
+
+    const validation = validateGlb(store.current!.buffer);
+    expect(validation.valid).toBe(true);
+    expect(validation.metadata?.meshCount).toBe(1);
+    expect(validation.metadata?.animationCount).toBe(1);
+  });
+
+  it('MeshyModelStore automatically merges motion clips with character meshes when animation arrives first', () => {
+    const store = new MeshyModelStore();
+    const modelKey = 'https://assets.meshy.ai/tasks/task-anim-test-2';
+    store.activateCandidate({ provider: 'meshy', modelKey, detectedAt: 1 });
+
+    const meshGlb = makeMeshAndRigGlb();
+    const animGlb = makeMotionClipGlb('Jump');
+
+    // 1. Animation clip arrives first
+    store.acceptDecodedGlb(animGlb, modelKey, `${modelKey}/animation.glb`);
+    expect(store.current?.metadata?.animationCount).toBe(1);
+
+    // 2. Mesh arrives second
+    store.acceptDecodedGlb(meshGlb, modelKey, `${modelKey}/model.meshy`);
+    expect(store.current).not.toBeNull();
+    // The current GLB must now contain BOTH the mesh AND the animation!
+    expect(store.current?.metadata?.meshCount).toBe(1);
+    expect(store.current?.metadata?.animationCount).toBe(1);
+
+    const validation = validateGlb(store.current!.buffer);
+    expect(validation.valid).toBe(true);
+    expect(validation.metadata?.meshCount).toBe(1);
+    expect(validation.metadata?.animationCount).toBe(1);
+  });
+
+  it('MeshyModelStore merges multiple animation clips into a single model', () => {
+    const store = new MeshyModelStore();
+    const modelKey = 'https://assets.meshy.ai/tasks/task-anim-test-3';
+    store.activateCandidate({ provider: 'meshy', modelKey, detectedAt: 1 });
+
+    const meshGlb = makeMeshAndRigGlb();
+    const walkGlb = makeMotionClipGlb('Walk');
+    const danceGlb = makeMotionClipGlb('Dance');
+
+    // 1. Mesh arrives
+    store.acceptDecodedGlb(meshGlb, modelKey, `${modelKey}/model.meshy`);
+
+    // 2. First animation clip arrives
+    store.acceptDecodedGlb(walkGlb, modelKey, `${modelKey}/walk.glb`);
+    expect(store.current?.metadata?.animationCount).toBe(1);
+
+    // 3. Second animation clip arrives
+    store.acceptDecodedGlb(danceGlb, modelKey, `${modelKey}/dance.glb`);
+    expect(store.current?.metadata?.meshCount).toBe(1);
+    expect(store.current?.metadata?.animationCount).toBe(2);
+
+    const validation = validateGlb(store.current!.buffer);
+    expect(validation.valid).toBe(true);
+    expect(validation.metadata?.meshCount).toBe(1);
+    expect(validation.metadata?.animationCount).toBe(2);
+  });
 });
+
