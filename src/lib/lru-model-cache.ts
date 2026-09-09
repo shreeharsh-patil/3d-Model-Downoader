@@ -39,6 +39,14 @@ export class LruModelCache<T extends SizedCacheEntry> {
     return value;
   }
 
+  get latest(): T | undefined {
+    let lastValue: T | undefined;
+    for (const val of this.entries.values()) {
+      lastValue = val;
+    }
+    return lastValue;
+  }
+
   set(key: string, value: T): void {
     const previous = this.entries.get(key);
     if (previous) this.total -= previous.byteLength;

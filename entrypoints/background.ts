@@ -141,10 +141,17 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'open-workspace') {
-      const provider = findProvider(sender.tab?.url);
-      return browser.tabs.create({
-        url: provider?.workspaceUrl ?? 'https://www.meshy.ai/workspace',
-      });
+      return (async () => {
+        let pageUrl = sender.tab?.url;
+        if (!pageUrl) {
+          const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+          pageUrl = activeTab?.url;
+        }
+        const provider = findProvider(pageUrl);
+        return browser.tabs.create({
+          url: provider?.workspaceUrl ?? 'https://www.meshy.ai/workspace',
+        });
+      })();
     }
 
     if (message.type === 'get-active-tab-state') {
@@ -190,6 +197,30 @@ export default defineBackground(() => {
             error: error instanceof Error ? error.message : String(error),
           };
         });
+    }
+
+    if (message.type === 'trigger-download') {
+      const { filename, bufferBase64, mimeType } = message;
+      try {
+        const dataUrl = `data:${mimeType || 'application/octet-stream'};base64,${bufferBase64}`;
+        if (browser.downloads?.download) {
+          return browser.downloads.download({
+            url: dataUrl,
+            filename,
+            saveAs: false,
+          }).then((downloadId) => {
+            logger.info('Background', `Browser download started: ${filename} (id ${downloadId})`);
+            return { ok: true, downloadId };
+          }).catch((error) => {
+            logger.warn('Background', `Browser download failed for ${filename}`, error);
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
+          });
+        }
+        return Promise.resolve({ ok: false, error: 'browser.downloads API not available' });
+      } catch (error) {
+        logger.warn('Background', 'trigger-download error', error);
+        return Promise.resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
     }
 
     if (message.type === 'download-active-tab-mesh') {

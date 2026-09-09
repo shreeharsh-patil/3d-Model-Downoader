@@ -22,13 +22,21 @@ export class MeshyProvider implements ModelProvider {
     try {
       const match = url.match(MESHY_CONSTANTS.MODEL_ID_URL_PATTERN);
       if (match && match[1]) {
-        return match[1];
+        const id = match[1].toLowerCase();
+        // Common non-model sub-routes like generate, create, history
+        if (!['generate', 'create', 'history', 'recent', 'library', 'gallery', 'editor', 'showcase', 'preview', 'explore', 'new', 'edit', 'draft', 'tasks', 'assets', 'view', 'feed', 'all'].includes(id)) {
+          return match[1];
+        }
       }
-      // Fallback: derive model key from pathname
+      // Fallback: derive model key from asset URL pathname (not generic page routes)
       const parsed = new URL(url);
-      const dir = parsed.pathname.replace(/\/[^/]+$/, '');
-      if (dir && dir !== '/') {
-        return `${parsed.origin}${dir}`;
+      const host = parsed.hostname.toLowerCase();
+      const isAssetHost = host.includes('cdn') || host.includes('assets') || host.includes('storage') || parsed.pathname.includes('/tasks/');
+      if (isAssetHost) {
+        const dir = parsed.pathname.replace(/\/[^/]+$/, '');
+        if (dir && dir !== '/') {
+          return `${parsed.origin}${dir}`;
+        }
       }
     } catch {
       // ignore

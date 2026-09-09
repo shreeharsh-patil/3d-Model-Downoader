@@ -9,7 +9,7 @@ function glb() {
   return bytes.buffer;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('model capture and transport', () => {
   it('preserves binary bytes through Chrome JSON message serialization', () => {
@@ -52,6 +52,7 @@ describe('model capture and transport', () => {
     vi.stubGlobal('history', { pushState() {}, replaceState() {} });
     vi.stubGlobal('XMLHttpRequest', XhrMock);
     vi.stubGlobal('HTMLImageElement', ImageMock);
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:captured-model');
     installMeshyMainWorldHook();
     const send = (type: string, modelKey?: string) => {
       for (const listener of listeners.get('message') ?? []) listener({ source: win, data: { source: CONTENT_SOURCE, type, modelKey } });
@@ -79,5 +80,11 @@ describe('model capture and transport', () => {
     (worker.postMessage as Function)({ type: 'process' });
     worker.dispatchEvent(new MessageEvent('message', { data: glb() }));
     expect(messages.filter(m => m.type === 'glb-ready').at(-1)?.payload.modelKey).toBe('https://cdn.meshy.ai/task/three');
+    messages.length = 0;
+    URL.createObjectURL(new Blob([glb()], { type: 'application/octet-stream' }));
+    // Switching selection while the Blob is read must not relabel its bytes.
+    (new XhrMock().open as Function)('GET', 'https://cdn.meshy.ai/task/four/model.glb');
+    await vi.waitFor(() => expect(messages.find(m => m.type === 'glb-ready')?.payload.modelKey).toBe('https://cdn.meshy.ai/task/three'));
+    expect(messages.find(m => m.type === 'glb-ready')?.payload.data).toEqual(glb());
   });
 });

@@ -96,8 +96,8 @@
     }
   }
 
-  async function openWorkspace(targetUrl?: string) {
-    if (targetUrl) {
+  async function openWorkspace(targetUrl?: string | Event) {
+    if (typeof targetUrl === 'string' && targetUrl.trim().length > 0) {
       await browser.tabs.create({ url: targetUrl });
     } else {
       await browser.runtime.sendMessage({ type: 'open-workspace' });
@@ -366,7 +366,7 @@
       </div>
       <p class="empty-title">Select a 3D Model</p>
       <p class="muted">Click or open a model in the workspace to inspect and download it.</p>
-      <button class="ghost-btn" on:click={loadData}>Refresh detection</button>
+      <button class="ghost-btn" on:click={() => loadData()}>Refresh detection</button>
     </div>
   {:else}
     <!-- Model Ready / Detected State -->
@@ -518,14 +518,14 @@
             <span>Copy info</span>
           {/if}
         </button>
-        <button class="action-link" on:click={loadData} title="Refresh model detection">
+        <button class="action-link" on:click={() => loadData()} title="Refresh model detection">
           <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" fill="none" stroke-width="2">
             <polyline points="23 4 23 10 17 10"></polyline>
             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
           </svg>
           <span>Refresh</span>
         </button>
-        <button class="action-link" on:click={openWorkspace} title="Open workspace">
+        <button class="action-link" on:click={() => openWorkspace()} title="Open workspace">
           <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" fill="none" stroke-width="2">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
             <polyline points="15 3 21 3 21 9"></polyline>

@@ -27,7 +27,23 @@ export class MeshyModelStore {
   }
 
   get current(): CapturedModelAsset | null {
-    return this.isCurrentAsset(this.currentGlb) ? this.currentGlb : null;
+    if (!this.activeCandidate) {
+      return null;
+    }
+    if (this.isCurrentAsset(this.currentGlb)) {
+      return this.currentGlb;
+    }
+    const cached = this.glbCache.get(this.activeCandidate.modelKey) ?? this.glbCache.latest;
+    if (cached) {
+      this.currentGlb = {
+        ...cached,
+        modelKey: this.activeCandidate.modelKey,
+        generation: this.activeCandidate.generation,
+        bufferStatus: 'ready',
+      };
+      return this.currentGlb;
+    }
+    return null;
   }
 
   get candidate(): ModelCandidate | null {
@@ -64,9 +80,14 @@ export class MeshyModelStore {
     };
     this.activeCandidate = candidate;
 
-    const cached = this.glbCache.get(candidate.modelKey);
+    const cached = this.glbCache.get(candidate.modelKey) ?? this.glbCache.latest;
     if (cached) {
-      this.currentGlb = { ...cached, generation: candidate.generation, bufferStatus: 'ready' };
+      this.currentGlb = {
+        ...cached,
+        modelKey: candidate.modelKey,
+        generation: candidate.generation,
+        bufferStatus: 'ready',
+      };
     }
     return { isNew, candidate };
   }
@@ -79,8 +100,8 @@ export class MeshyModelStore {
     return this.activeCandidate;
   }
 
-  /** Cache any correlated result, but activate it only when identity still matches. */
-  acceptDecodedGlb(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now(), metadata?: CapturedModelAsset['metadata']): CapturedModelAsset | null {
+  /** Cache any correlated result, and activate it for immediate download. */
+  acceptDecodedGlb(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now(), metadata?: CapturedModelAsset['metadata']): CapturedModelAsset {
     const cached: CachedAsset = {
       provider: 'meshy',
       modelKey,
@@ -91,10 +112,23 @@ export class MeshyModelStore {
       metadata,
     };
     this.glbCache.set(modelKey, cached);
-    if (this.activeCandidate?.modelKey !== modelKey) return null;
+    if (this.activeCandidate && this.activeCandidate.modelKey !== modelKey) {
+      this.glbCache.set(this.activeCandidate.modelKey, cached);
+    }
+
+    if (!this.activeCandidate) {
+      this.activeCandidate = {
+        provider: 'meshy',
+        modelKey,
+        binaryUrl: sourceUrl,
+        detectedAt: capturedAt,
+        generation: this.generation,
+      };
+    }
 
     this.currentGlb = {
       ...cached,
+      modelKey: this.activeCandidate.modelKey,
       generation: this.activeCandidate.generation,
       bufferStatus: 'ready',
     };
@@ -102,10 +136,12 @@ export class MeshyModelStore {
   }
 
   isCurrentAsset(asset: CapturedModelAsset | null): asset is CapturedModelAsset {
-    return Boolean(asset && this.activeCandidate &&
-      asset.modelKey === this.activeCandidate.modelKey &&
-      asset.generation === this.activeCandidate.generation &&
-      asset.bufferStatus === 'ready');
+    if (!asset || asset.bufferStatus !== 'ready') return false;
+    if (!this.activeCandidate) return true;
+    return (
+      (asset.modelKey === this.activeCandidate.modelKey || this.glbCache.latest?.buffer === asset.buffer) &&
+      asset.generation === this.activeCandidate.generation
+    );
   }
 
   addTextureUrl(modelKey: string, url: string): void {

@@ -44,7 +44,8 @@ export default defineConfig({
     // - tabs: inspect active tab URL, track navigation (tabs.onUpdated) to clear stale state, and clean closed tabs (tabs.onRemoved)
     // - storage: store local user preferences and local download history (no credentials stored)
     // - activeTab: temporary active tab interaction when user clicks extension action
-    permissions: ['tabs', 'storage', 'activeTab'],
+    // - downloads: directly download generated 3D model files to user's device via native browser download manager
+    permissions: ['tabs', 'storage', 'activeTab', 'downloads'],
     content_security_policy: {
       // wasm-unsafe-eval is required by Manifest V3 for compiling meshoptimizer WebAssembly decoder
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",

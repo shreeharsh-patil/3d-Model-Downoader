@@ -128,7 +128,7 @@ async function downloadModelWithTextureFallback(
     if (textureUrls.length === 1 && (asset.metadata?.materialCount ?? 0) <= 1) {
       try {
         const texturePng = await fetchTexturePng(textureUrls[0]);
-        if (abortController.signal.aborted || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
+        if (abortController.signal.aborted || !jobs.isCurrent(job)) return;
 
         const embedded = embedTextureInGlb(asset.buffer, texturePng);
         if (embedded) {
@@ -143,7 +143,7 @@ async function downloadModelWithTextureFallback(
     }
   }
 
-  if (abortController.signal.aborted || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
+  if (abortController.signal.aborted || !jobs.isCurrent(job)) return;
 
   // Optional texture format transcoding if configured
   try {
@@ -158,7 +158,7 @@ async function downloadModelWithTextureFallback(
     logger.warn('Meshy', 'Texture formatting failed, downloading original textures', error);
   }
 
-  if (abortController.signal.aborted || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
+  if (abortController.signal.aborted || !jobs.isCurrent(job)) return;
 
   let requestedFormat = targetFormat;
   if (!requestedFormat) {
@@ -175,7 +175,7 @@ async function downloadModelWithTextureFallback(
 
   try {
     jobs.transition(job, 'validating');
-    if (!jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
+    if (!jobs.isCurrent(job)) return;
     jobs.transition(job, 'downloading');
     const res = await executeDownload(downloadBufferValue, {
       filename,
@@ -192,6 +192,7 @@ async function downloadModelWithTextureFallback(
       generation: job.generation,
       modelKey: job.modelKey,
     });
+    return res;
   } catch (error) {
     jobs.transition(job, 'error', error instanceof Error ? error.message : String(error));
     logger.error('Meshy', 'Download failed', error);
@@ -200,6 +201,7 @@ async function downloadModelWithTextureFallback(
       generation: job.generation,
       modelKey: job.modelKey,
     });
+    throw error;
   } finally {
     if (activeAbortController === abortController) {
       activeAbortController = null;
@@ -207,45 +209,66 @@ async function downloadModelWithTextureFallback(
   }
 }
 
-function startModelDownload(targetFormat?: ExportFormat): { ok: boolean; queued?: boolean; byteLength?: number; error?: string } {
-  const current = meshyModelStore.current;
-  const candidate = meshyModelStore.candidate;
-  if (!candidate) {
-    notifyOverlay('download-error', { error: 'No active Meshy model is detected yet.' });
+async function startModelDownload(targetFormat?: ExportFormat): Promise<{ ok: boolean; queued?: boolean; byteLength?: number; error?: string }> {
+  let current = meshyModelStore.current;
+  let candidate = meshyModelStore.candidate;
+  if (!candidate && current) {
+    candidate = {
+      provider: 'meshy',
+      modelKey: current.modelKey,
+      generation: current.generation,
+      detectedAt: current.capturedAt,
+      binaryUrl: current.sourceUrl,
+    };
+  }
+  if (!candidate && !current) {
+    notifyOverlay('download-error', { error: 'No active Meshy model is detected yet. Please ensure a 3D model is loaded in the viewer.' });
     return { ok: false, error: 'No active Meshy model is detected yet.' };
   }
-  const job = jobs.begin('meshy', candidate.modelKey, candidate.generation, candidate.binaryUrl);
+  const modelKey = candidate?.modelKey ?? current?.modelKey!;
+  const generation = candidate?.generation ?? current?.generation ?? 0;
+  const binaryUrl = candidate?.binaryUrl ?? current?.sourceUrl;
+
+  const job = jobs.begin('meshy', modelKey, generation, binaryUrl);
   if (!job) return { ok: false, error: 'A model download is already in progress.' };
   queuedFormat = targetFormat;
-  if (!current || current.modelKey !== job.modelKey || current.generation !== job.generation) {
-    notifyOverlay('download-pending', {
-      generation: job.generation,
-      modelKey: job.modelKey,
-    });
-    window.postMessage({ source: CONTENT_SOURCE, type: 'request-model-buffer', modelKey: job.modelKey }, window.location.origin);
-    window.setTimeout(() => {
-      if (job.status !== 'queued' || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
-      const error = 'The model was detected, but its decoded GLB is unavailable. Open the model in Meshy’s viewer and use its Export/Download action, then retry. If the extension was just reloaded, refresh this page first.';
-      jobs.transition(job, 'error', error);
-      notifyOverlay('download-error', { error, generation: job.generation, modelKey: job.modelKey });
-    }, 30000);
-    return { ok: true, queued: true };
+
+  if (current?.buffer) {
+    try {
+      const res = await downloadModelWithTextureFallback(current, job, targetFormat);
+      if (!res) {
+        return { ok: false, error: 'Download was cancelled or model changed.' };
+      }
+      return { ok: true, byteLength: res.size };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
-  void downloadModelWithTextureFallback(current, job, targetFormat);
-  return { ok: true, byteLength: current.byteLength };
+  notifyOverlay('download-pending', {
+    generation: job.generation,
+    modelKey: job.modelKey,
+  });
+  window.postMessage({ source: CONTENT_SOURCE, type: 'request-model-buffer', modelKey: job.modelKey }, '*');
+  window.setTimeout(() => {
+    if (job.status !== 'queued' || !jobs.isCurrent(job)) return;
+    const error = 'The model was detected, but its decoded GLB is unavailable. Open the model in Meshy’s viewer and use its Export/Download action, then retry. If the extension was just reloaded, refresh this page first.';
+    jobs.transition(job, 'error', error);
+    notifyOverlay('download-error', { error, generation: job.generation, modelKey: job.modelKey });
+  }, 30000);
+  return { ok: true, queued: true };
 }
 
 function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now()) {
-  if (!isCorrelatedWithPage(modelKey)) {
+  const job = jobs.current;
+  if (job?.status !== 'queued' && !isCorrelatedWithPage(modelKey)) {
     logger.debug('Meshy', 'Ignored decoded GLB that is not correlated with the selected route.', { modelKey });
     return;
   }
   const validation = validateGlb(buffer);
   if (!validation.valid) {
     logger.warn('Meshy', 'Ignored invalid GLB from worker', validation.reason);
-    const job = jobs.current;
-    if (job?.status === 'queued' && job.modelKey === modelKey && jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) {
+    if (job?.status === 'queued' && jobs.isCurrent(job)) {
       const error = validation.reason || 'The decoded model is not a valid GLB.';
       jobs.transition(job, 'error', error);
       notifyOverlay('download-error', { error, generation: job.generation, modelKey });
@@ -266,10 +289,6 @@ function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: strin
   const acceptedBuffer = normalizedValidation.valid ? normalizedBuffer : buffer;
   const metadata = normalizedValidation.valid ? normalizedValidation.metadata : validation.metadata;
   const cached = meshyModelStore.acceptDecodedGlb(acceptedBuffer, modelKey, sourceUrl, capturedAt, metadata);
-  if (!cached) {
-    logger.debug('Meshy', 'Cached late GLB without activating it', { modelKey });
-    return;
-  }
   logger.info('Meshy', `GLB ready for model ${modelKey} (${cached.byteLength} bytes)`);
 
   notifyOverlay('glb-ready', {
@@ -280,8 +299,7 @@ function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: strin
 
   void syncWithBackground();
 
-  const job = jobs.current;
-  if (job?.status === 'queued' && jobs.isCurrent(job, cached.modelKey, cached.generation)) {
+  if (job?.status === 'queued' && jobs.isCurrent(job)) {
     void downloadModelWithTextureFallback(cached, job, queuedFormat);
   }
 }
@@ -421,7 +439,7 @@ export default defineContentScript({
     });
 
     // Request status from main world hook
-    window.postMessage({ source: CONTENT_SOURCE, type: 'status-request' }, window.location.origin);
+    window.postMessage({ source: CONTENT_SOURCE, type: 'status-request' }, '*');
 
     // Mount Shadow DOM Overlay UI
     const ui = await createShadowRootUi(ctx, {

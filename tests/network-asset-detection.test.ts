@@ -45,8 +45,15 @@ describe('current provider network asset detection', () => {
 
     expect(getMeshyPageModelHint('https://www.meshy.ai/workspace')).toBeUndefined();
     expect(getMeshyPageModelHint('https://www.meshy.ai/workspace/library')).toBeUndefined();
+    expect(getMeshyPageModelHint('https://www.meshy.ai/workspace/text-to-3d/generate')).toBeUndefined();
+    expect(getMeshyPageModelHint('https://www.meshy.ai/workspace/image-to-3d/generate')).toBeUndefined();
+    expect(getMeshyPageModelHint('https://www.meshy.ai/workspace/text-to-3d/history')).toBeUndefined();
+    expect(getMeshyPageModelHint('https://www.meshy.ai/workspace/text-to-3d/create')).toBeUndefined();
     expect(isMeshyModelKeyCorrelatedWithPage(modelKey, 'https://www.meshy.ai/workspace')).toBe(true);
     expect(isMeshyModelKeyCorrelatedWithPage(modelKey, 'https://www.meshy.ai/workspace/library')).toBe(true);
+    expect(isMeshyModelKeyCorrelatedWithPage(modelKey, 'https://www.meshy.ai/workspace/text-to-3d/generate')).toBe(true);
+    expect(isMeshyModelKeyCorrelatedWithPage(modelKey, 'https://www.meshy.ai/workspace/image-to-3d/generate')).toBe(true);
+    expect(meshyProvider.extractModelId('https://www.meshy.ai/workspace/text-to-3d/generate')).toBeUndefined();
   });
 
   it('still rejects a stale asset when the Meshy route names another model', () => {
