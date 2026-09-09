@@ -15,7 +15,8 @@ export function extractMeshyModelName(): string | undefined {
     const heading = document.querySelector('main h1, main h2, [data-testid="model-title"]');
     if (heading?.textContent && heading.textContent.trim().length > 0) {
       const text = heading.textContent.trim();
-      if (text !== 'Workspace' && text !== 'Text to 3D' && text !== 'Image to 3D' && text.length < 60) {
+      const generic = /^(?:workspace|text\s+to\s+3d|image\s+to\s+3d|text\s+to\s+texture|remesh|animate|animation|rigging|auto-rigging|auto\s+rigging)$/i;
+      if (!generic.test(text) && text.length < 60) {
         return text;
       }
     }

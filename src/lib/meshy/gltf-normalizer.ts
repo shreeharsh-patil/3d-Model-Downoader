@@ -54,6 +54,12 @@ type GltfDocument = {
       material?: number;
     }>;
   }>;
+  animations?: Array<Record<string, unknown>>;
+  skins?: Array<Record<string, unknown>>;
+  nodes?: Array<Record<string, unknown>>;
+  scenes?: Array<Record<string, unknown>>;
+  scene?: number;
+  [key: string]: unknown;
 };
 
 export type GlbChunk = {
@@ -283,6 +289,21 @@ function hasQuantizedMeshAttributes(gltf: GltfDocument) {
   return false;
 }
 
+function hasQuantizedAttributesOrAnimations(gltf: GltfDocument): boolean {
+  if (hasQuantizedMeshAttributes(gltf)) return true;
+  if (Array.isArray(gltf.animations)) {
+    for (const anim of gltf.animations as Array<{ samplers?: Array<{ output?: number }> }>) {
+      for (const sampler of anim?.samplers ?? []) {
+        if (typeof sampler?.output === 'number') {
+          const acc = gltf.accessors?.[sampler.output];
+          if (acc && acc.componentType !== COMPONENT_FLOAT) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function normalizeQuantizedPositionsInGlb(buffer: ArrayBuffer): ArrayBuffer {
   try {
     const parsed = parseGlb(buffer);
@@ -346,7 +367,7 @@ export function normalizeQuantizedPositionsInGlb(buffer: ArrayBuffer): ArrayBuff
     gltf.bufferViews = bufferViews;
     gltf.buffers ??= [{ byteLength: 0 }];
     gltf.buffers[0].byteLength = nextBin.byteLength;
-    if (!hasQuantizedMeshAttributes(gltf)) {
+    if (!hasQuantizedAttributesOrAnimations(gltf)) {
       gltf.extensionsRequired = stripExtension(gltf.extensionsRequired, KHR_MESH_QUANTIZATION);
       gltf.extensionsUsed = stripExtension(gltf.extensionsUsed, KHR_MESH_QUANTIZATION);
     }

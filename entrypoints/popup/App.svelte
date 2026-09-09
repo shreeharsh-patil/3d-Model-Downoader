@@ -30,18 +30,21 @@
     return `${kb.toFixed(1)} KB`;
   }
 
-  async function loadData(preserveNotification = false) {
+  async function loadData(preserveNotification = false, refresh = false) {
     loading = true;
     if (!preserveNotification) userMessage = '';
     try {
       const [activeTabRes, settingsRes] = await Promise.all([
-        browser.runtime.sendMessage({ type: 'get-active-tab-state' }),
+        browser.runtime.sendMessage({ type: refresh ? 'refresh-active-tab' : 'get-active-tab-state', refresh }),
         browser.runtime.sendMessage({ type: 'get-settings' }),
       ]);
       tabState = activeTabRes as TabState;
       settings = settingsRes as DownloaderSettings;
       if (settings?.exportFormat) {
         selectedFormat = settings.exportFormat;
+      }
+      if (refresh) {
+        setNotification('Model detection refreshed.');
       }
     } catch {
       setNotification('Failed to communicate with the background worker. Please retry.');
@@ -366,7 +369,7 @@
       </div>
       <p class="empty-title">Select a 3D Model</p>
       <p class="muted">Click or open a model in the workspace to inspect and download it.</p>
-      <button class="ghost-btn" on:click={() => loadData()}>Refresh detection</button>
+      <button class="ghost-btn" on:click={() => loadData(false, true)}>Refresh detection</button>
     </div>
   {:else}
     <!-- Model Ready / Detected State -->
@@ -518,7 +521,7 @@
             <span>Copy info</span>
           {/if}
         </button>
-        <button class="action-link" on:click={() => loadData()} title="Refresh model detection">
+        <button class="action-link" on:click={() => loadData(false, true)} title="Refresh model detection">
           <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" fill="none" stroke-width="2">
             <polyline points="23 4 23 10 17 10"></polyline>
             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>

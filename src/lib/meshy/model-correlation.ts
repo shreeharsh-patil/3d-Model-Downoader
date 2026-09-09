@@ -30,13 +30,20 @@ export const NON_MODEL_SEGMENTS = new Set([
   'image-to-3d',
   'remesh',
   'text-to-texture',
+  'animation',
+  'animate',
+  'rigging',
+  'auto-rigging',
+  'text-to-animation',
+  'image-to-animation',
+  'motion',
 ]);
 
 export function getMeshyPageModelHint(url: string, baseUrl = 'https://www.meshy.ai/'): string | undefined {
   try {
     const parsed = new URL(url, baseUrl);
 
-    for (const key of ['taskId', 'task_id', 'modelId', 'model_id', 'id']) {
+    for (const key of ['taskId', 'task_id', 'modelId', 'model_id', 'id', 'animationId', 'animation_id']) {
       const value = parsed.searchParams.get(key);
       if (value && /^[a-z0-9_-]{8,}$/i.test(value) && !NON_MODEL_SEGMENTS.has(value.toLowerCase())) {
         return value.toLowerCase();
@@ -44,7 +51,7 @@ export function getMeshyPageModelHint(url: string, baseUrl = 'https://www.meshy.
     }
 
     const routeMatch = parsed.pathname.match(
-      /\/workspace\/(?:(?:text|image)-to-3d|remesh)\/([a-z0-9_-]+)/i,
+      /\/workspace\/(?:(?:text|image)-to-3d|remesh|animation|animate|rigging|auto-rigging|text-to-animation|image-to-animation|motion)\/([a-z0-9_-]+)/i,
     );
     if (routeMatch?.[1]) {
       const segment = routeMatch[1].toLowerCase();
@@ -62,9 +69,16 @@ export function getMeshyPageModelHint(url: string, baseUrl = 'https://www.meshy.
 /**
  * A generic workspace URL has no useful correlation id, so rejecting every
  * asset there makes downloads impossible. Only enforce correlation when the
- * route explicitly names a model.
+ * route explicitly names a model. Also allow animated/rigged task assets.
  */
 export function isMeshyModelKeyCorrelatedWithPage(modelKey: string, pageUrl: string): boolean {
   const hint = getMeshyPageModelHint(pageUrl);
-  return !hint || modelKey.toLowerCase().includes(hint);
+  if (!hint) return true;
+  const lowerKey = modelKey.toLowerCase();
+  if (lowerKey.includes(hint)) return true;
+  // Rigged models and animation tracks can have separate task IDs or motion library paths
+  if (/(?:anim|motion|rig)/i.test(lowerKey)) return true;
+  // If the page is specifically on an animation or rigging route
+  if (/(?:animation|animate|rigging|auto-rigging|motion)/i.test(pageUrl)) return true;
+  return false;
 }

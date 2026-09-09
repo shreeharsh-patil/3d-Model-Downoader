@@ -47,7 +47,8 @@ export function isMainWorldMessage(data: unknown): data is { source: string; typ
 }
 
 export type ExtensionMessage =
-  | { type: 'get-active-tab-state' }
+  | { type: 'get-active-tab-state'; refresh?: boolean }
+  | { type: 'refresh-active-tab' }
   | { type: 'get-state' }
   | { type: 'get-settings' }
   | { type: 'set-never-show-again'; value: boolean }
@@ -59,7 +60,8 @@ export type ExtensionMessage =
   | { type: 'record-download'; item: Omit<DownloadHistoryItem, 'id' | 'timestamp'> }
   | { type: 'download-active-tab-mesh'; exportFormat?: import('./types').ExportFormat }
   | { type: 'download-last-mesh'; exportFormat?: import('./types').ExportFormat }
-  | { type: 'get-page-state' }
+  | { type: 'get-page-state'; refresh?: boolean }
+  | { type: 'refresh-detection' }
   | { type: 'open-workspace' }
   | { type: 'model-detected'; payload: { model: DetectedModel; revision: number } }
   | { type: 'process-tripo-glb'; url: string; modelName?: string; provider?: import('./types').WebsiteId }

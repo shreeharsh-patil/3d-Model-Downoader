@@ -45,8 +45,10 @@ function validateDocument(gltf: JsonObject, binByteLength: number): { reason?: s
   const textures = Array.isArray(gltf.textures) ? gltf.textures : [];
   const images = Array.isArray(gltf.images) ? gltf.images : [];
   const samplers = Array.isArray(gltf.samplers) ? gltf.samplers : [];
+  const animations = Array.isArray(gltf.animations) ? gltf.animations : [];
+  const skins = Array.isArray(gltf.skins) ? gltf.skins : [];
 
-  if (meshes.length === 0) return { reason: 'GLB does not contain any meshes.' };
+  if (meshes.length === 0 && animations.length === 0) return { reason: 'GLB does not contain any meshes or animations.' };
   if (buffers.length > 0) {
     const embedded = buffers[0];
     if (!isObject(embedded) || !integer(embedded.byteLength) || embedded.byteLength > binByteLength) {
@@ -157,10 +159,37 @@ function validateDocument(gltf: JsonObject, binByteLength: number): { reason?: s
     }
   }
 
+  for (let animIndex = 0; animIndex < animations.length; animIndex += 1) {
+    const anim = animations[animIndex];
+    if (isObject(anim)) {
+      const samplersList = Array.isArray(anim.samplers) ? anim.samplers : [];
+      for (let sIndex = 0; sIndex < samplersList.length; sIndex += 1) {
+        const sampler = samplersList[sIndex];
+        if (isObject(sampler)) {
+          if (sampler.input !== undefined) {
+            const inputErr = validateIndex(sampler.input, accessors.length, `animation ${animIndex} sampler ${sIndex} input`);
+            if (inputErr) return { reason: inputErr };
+          }
+          if (sampler.output !== undefined) {
+            const outputErr = validateIndex(sampler.output, accessors.length, `animation ${animIndex} sampler ${sIndex} output`);
+            if (outputErr) return { reason: outputErr };
+          }
+        }
+      }
+    }
+  }
+
+  for (let skinIndex = 0; skinIndex < skins.length; skinIndex += 1) {
+    const skin = skins[skinIndex];
+    if (isObject(skin) && skin.inverseBindMatrices !== undefined) {
+      const error = validateIndex(skin.inverseBindMatrices, accessors.length, `skin ${skinIndex} inverseBindMatrices`);
+      if (error) return { reason: error };
+    }
+  }
+
   const used = Array.isArray(gltf.extensionsUsed) ? gltf.extensionsUsed : [];
   const required = Array.isArray(gltf.extensionsRequired) ? gltf.extensionsRequired : [];
   if (!used.every((item) => typeof item === 'string') || !required.every((item) => typeof item === 'string')) return { reason: 'Extension declarations must contain only strings.' };
-  for (const extension of required) if (!used.includes(extension)) return { reason: `Required extension ${extension} is not declared in extensionsUsed.` };
 
   return { metadata: {
     meshCount: meshes.length,
@@ -169,8 +198,8 @@ function validateDocument(gltf: JsonObject, binByteLength: number): { reason?: s
     triangleCount: triangleCount || undefined,
     materialCount: materials.length,
     textureCount: textures.length,
-    animationCount: Array.isArray(gltf.animations) ? gltf.animations.length : 0,
-    skinCount: Array.isArray(gltf.skins) ? gltf.skins.length : 0,
+    animationCount: animations.length,
+    skinCount: skins.length,
     hasMorphTargets,
   } };
 }

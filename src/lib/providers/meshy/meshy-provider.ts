@@ -20,16 +20,24 @@ export class MeshyProvider implements ModelProvider {
 
   extractModelId(url: string): string | undefined {
     try {
+      const parsed = new URL(url);
+
+      for (const key of ['taskId', 'task_id', 'modelId', 'model_id', 'id', 'animationId', 'animation_id']) {
+        const value = parsed.searchParams.get(key);
+        if (value && /^[a-z0-9_-]{8,}$/i.test(value) && !['generate', 'create', 'history', 'recent', 'library', 'gallery', 'editor', 'showcase', 'preview', 'explore', 'new', 'edit', 'draft', 'tasks', 'assets', 'view', 'feed', 'all', 'animation', 'animate', 'rigging', 'auto-rigging', 'motion'].includes(value.toLowerCase())) {
+          return value;
+        }
+      }
+
       const match = url.match(MESHY_CONSTANTS.MODEL_ID_URL_PATTERN);
       if (match && match[1]) {
         const id = match[1].toLowerCase();
         // Common non-model sub-routes like generate, create, history
-        if (!['generate', 'create', 'history', 'recent', 'library', 'gallery', 'editor', 'showcase', 'preview', 'explore', 'new', 'edit', 'draft', 'tasks', 'assets', 'view', 'feed', 'all'].includes(id)) {
+        if (!['generate', 'create', 'history', 'recent', 'library', 'gallery', 'editor', 'showcase', 'preview', 'explore', 'new', 'edit', 'draft', 'tasks', 'assets', 'view', 'feed', 'all', 'animation', 'animate', 'rigging', 'auto-rigging', 'motion', 'text-to-animation', 'image-to-animation'].includes(id)) {
           return match[1];
         }
       }
       // Fallback: derive model key from asset URL pathname (not generic page routes)
-      const parsed = new URL(url);
       const host = parsed.hostname.toLowerCase();
       const isAssetHost = host.includes('cdn') || host.includes('assets') || host.includes('storage') || parsed.pathname.includes('/tasks/');
       if (isAssetHost) {

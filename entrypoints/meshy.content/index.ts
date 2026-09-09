@@ -63,21 +63,22 @@ function getPageState(): PageState {
 
 async function syncWithBackground() {
   const current = meshyModelStore.current;
+  const candidate = meshyModelStore.candidate;
   const modelName = extractMeshyModelName();
   const previewUrl = extractMeshyThumbnailUrl();
 
-  const detectedModel: DetectedModel | undefined = current
+  const detectedModel: DetectedModel | undefined = (current || candidate)
     ? {
-        id: current.modelKey,
+        id: current?.modelKey ?? candidate?.modelKey ?? window.location.href,
         provider: 'meshy',
         name: modelName,
         pageUrl: window.location.href,
         format: 'glb',
-        detectedAt: Date.now(),
-        size: current.byteLength,
-        status: 'ready',
+        detectedAt: current?.capturedAt ?? candidate?.detectedAt ?? Date.now(),
+        size: current?.byteLength,
+        status: current ? 'ready' : 'detecting',
         previewUrl,
-        metadata: current.metadata,
+        metadata: current?.metadata,
       }
     : undefined;
 
@@ -88,11 +89,11 @@ async function syncWithBackground() {
         tabId: 0,
         provider: 'meshy',
         pageUrl: window.location.href,
-        modelId: current?.modelKey,
+        modelId: current?.modelKey ?? candidate?.modelKey,
         model: detectedModel,
         revision: meshyModelStore.currentGeneration,
         updatedAt: Date.now(),
-        status: current ? 'ready' : 'detecting',
+        status: current ? 'ready' : (candidate ? 'detecting' : 'ready'),
       },
     });
   } catch {
@@ -212,6 +213,13 @@ async function downloadModelWithTextureFallback(
 async function startModelDownload(targetFormat?: ExportFormat): Promise<{ ok: boolean; queued?: boolean; byteLength?: number; error?: string }> {
   let current = meshyModelStore.current;
   let candidate = meshyModelStore.candidate;
+
+  if (!candidate && !current) {
+    scanExistingResources();
+    current = meshyModelStore.current;
+    candidate = meshyModelStore.candidate;
+  }
+
   if (!candidate && current) {
     candidate = {
       provider: 'meshy',
@@ -261,18 +269,22 @@ async function startModelDownload(targetFormat?: ExportFormat): Promise<{ ok: bo
 
 function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: string, capturedAt = Date.now()) {
   const job = jobs.current;
-  if (job?.status !== 'queued' && !isCorrelatedWithPage(modelKey)) {
-    logger.debug('Meshy', 'Ignored decoded GLB that is not correlated with the selected route.', { modelKey });
-    return;
-  }
+  const isQueued = job?.status === 'queued';
+
   const validation = validateGlb(buffer);
   if (!validation.valid) {
     logger.warn('Meshy', 'Ignored invalid GLB from worker', validation.reason);
-    if (job?.status === 'queued' && jobs.isCurrent(job)) {
+    if (isQueued && jobs.isCurrent(job)) {
       const error = validation.reason || 'The decoded model is not a valid GLB.';
       jobs.transition(job, 'error', error);
       notifyOverlay('download-error', { error, generation: job.generation, modelKey });
     }
+    return;
+  }
+
+  const isAnimated = (validation.metadata?.animationCount ?? 0) > 0 || (validation.metadata?.skinCount ?? 0) > 0;
+  if (!isQueued && !isAnimated && !isCorrelatedWithPage(modelKey)) {
+    logger.debug('Meshy', 'Ignored decoded GLB that is not correlated with the selected route.', { modelKey });
     return;
   }
 
@@ -356,6 +368,72 @@ function handleTextureDetected(url?: string, explicitModelKey?: string) {
   logger.debug('Meshy', 'texture URL detected', url);
 }
 
+let resourceObserver: PerformanceObserver | undefined;
+
+function inspectResourceUrl(url: string) {
+  if (!url) return;
+  try {
+    const parsed = new URL(url, window.location.href);
+    const pathname = parsed.pathname;
+
+    if (/(^|\/)(model|mesh)\.json($|\?)/i.test(pathname)) {
+      handleModelJsonDetected(url);
+    } else if (meshyProvider.isBinaryAsset(url)) {
+      handleModelBinaryDetected(url);
+    } else if (/^texture_[^/]*\.png/i.test(pathname.split('/').pop() ?? '')) {
+      handleTextureDetected(url);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function scanExistingResources(): void {
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+      const entries = performance.getEntriesByType('resource');
+      for (const entry of entries) {
+        inspectResourceUrl(entry.name);
+      }
+    }
+
+    const routeHint = getMeshyPageModelHint(window.location.href);
+    if (routeHint) {
+      const currentKey = meshyModelStore.currentModelKey;
+      if (!currentKey || !currentKey.toLowerCase().includes(routeHint)) {
+        const pageClean = window.location.href.split('?')[0].split('#')[0];
+        const modelKey = pageClean.toLowerCase().includes(routeHint) ? pageClean : `https://www.meshy.ai/workspace/text-to-3d/${routeHint}`;
+        meshyModelStore.activateCandidate({
+          provider: 'meshy',
+          modelKey,
+          detectedAt: Date.now(),
+        });
+      }
+    }
+
+    window.postMessage({ source: CONTENT_SOURCE, type: 'status-request' }, '*');
+  } catch {
+    // ignore
+  }
+}
+
+function installResourceObserver() {
+  try {
+    scanExistingResources();
+
+    if (typeof PerformanceObserver !== 'undefined') {
+      resourceObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          inspectResourceUrl(entry.name);
+        }
+      });
+      resourceObserver.observe({ entryTypes: ['resource'] });
+    }
+  } catch (error) {
+    logger.warn('Meshy', 'Failed to initialize PerformanceObserver', error);
+  }
+}
+
 function handleRouteChange(url?: string) {
   logger.debug('Meshy', 'SPA Route changed', url);
   // Only an explicit, different model id proves that the captured asset is
@@ -370,8 +448,10 @@ function handleRouteChange(url?: string) {
     notifyOverlay('model-changed', {
       generation: meshyModelStore.currentGeneration,
     });
-    void syncWithBackground();
   }
+
+  scanExistingResources();
+  void syncWithBackground();
 }
 
 async function handleUserChoice(choice: 'yes' | 'no' | 'never') {
@@ -454,6 +534,7 @@ export default defineContentScript({
       },
       onRemove: (app) => {
         if (app) unmount(app);
+        resourceObserver?.disconnect();
         activeAbortController?.abort();
         jobs.reset();
         meshyModelStore.dispose();
@@ -461,6 +542,7 @@ export default defineContentScript({
     });
 
     ui.mount();
+    installResourceObserver();
 
     window.addEventListener(`${overlayConfig.eventPrefix}:user-choice`, (event) => {
       const choice = (event as CustomEvent).detail;
@@ -471,7 +553,9 @@ export default defineContentScript({
     browser.runtime.onMessage.addListener((message) => {
       if (!message || typeof message !== 'object') return;
 
-      if (message.type === 'get-page-state') {
+      if (message.type === 'get-page-state' || message.type === 'refresh-detection') {
+        scanExistingResources();
+        void syncWithBackground();
         return Promise.resolve(getPageState());
       }
 

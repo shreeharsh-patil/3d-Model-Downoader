@@ -69,7 +69,7 @@ function resolveUrl(input: unknown): string | undefined {
   }
 }
 
-const MESHY_ASSET_MARKER = /(?:\.glb(?:[?#]|$)|\/(?:model\.meshy|model\.json|mesh\.json)(?:[?#]|$)|\/texture_[^/?#]+\.png(?:[?#]|$))/i;
+const MESHY_ASSET_MARKER = /(?:\.(?:glb|meshy)(?:[?#]|$)|\/(?:model|mesh|animation|rigged|motion|rig)\.(?:json|meshy|glb)(?:[?#]|$)|\/texture_[^/?#]+\.png(?:[?#]|$))/i;
 
 export function findMeshyAssetUrlsInObject(value: unknown, baseUrl: string, found: string[] = []): string[] {
   if (typeof value === 'string') {
@@ -268,7 +268,7 @@ export function installMeshyMainWorldHook() {
       const url = new URL(urlStr, window.location.href);
       const pathname = url.pathname;
 
-      if (/(^|\/)(model|mesh)\.json$/i.test(pathname)) {
+      if (/(^|\/)(?:model|mesh|animation|rigged|motion|rig)\.json$/i.test(pathname)) {
         const candidate = recordDetection(url.href, false);
         if (!candidate) return;
         postToContent('model-json-detected', {
@@ -314,21 +314,19 @@ export function installMeshyMainWorldHook() {
       const buffer = await blob.arrayBuffer();
       lastCapturedBlob = { buffer: buffer.slice(0), capturedAt: Date.now(), modelKey: capturedCandidate?.modelKey };
 
-      const activeCandidate = capturedCandidate ?? latestCandidate ?? {
+      const activeCandidate: DetectionRecord = capturedCandidate ?? {
         id: `meshy-blob-${Date.now()}-${++detectionSequence}`,
         modelKey: window.location.href.split('?')[0].split('#')[0],
         detectedAt: Date.now(),
       };
-      if (!latestCandidate) {
-        latestCandidate = activeCandidate;
-        postToContent('model-binary-detected', {
-          url: activeCandidate.binaryUrl ?? activeCandidate.modelKey,
-          pageUrl: window.location.href,
-          capturedAt: Date.now(),
-          modelKey: activeCandidate.modelKey,
-          detectionId: activeCandidate.id,
-        });
-      }
+      latestCandidate = activeCandidate;
+      postToContent('model-binary-detected', {
+        url: activeCandidate.binaryUrl ?? activeCandidate.modelKey,
+        pageUrl: window.location.href,
+        capturedAt: Date.now(),
+        modelKey: activeCandidate.modelKey,
+        detectionId: activeCandidate.id,
+      });
 
       postToContent('glb-ready', {
         data: buffer, byteLength: buffer.byteLength, capturedAt: Date.now(),
@@ -356,7 +354,7 @@ export function installMeshyMainWorldHook() {
             modelKey: window.location.href.split('?')[0].split('#')[0],
             detectedAt: Date.now(),
           };
-          if (!latestCandidate) latestCandidate = candidate;
+          latestCandidate = candidate;
           const copy = buffer.slice(0);
           postToContent('glb-ready', {
             data: copy,
@@ -377,7 +375,9 @@ export function installMeshyMainWorldHook() {
     Response.prototype.blob = function () {
       return nativeResponseBlob.apply(this).then((blob: Blob) => {
         if (blob && blob.size >= 12) {
-          captureLoadedBlob(blob, latestCandidate);
+          const url = this.url || latestCandidate?.binaryUrl;
+          const candidate = (url ? recordDetection(url, true) : undefined) ?? latestCandidate;
+          captureLoadedBlob(blob, candidate);
         }
         return blob;
       });
@@ -456,24 +456,64 @@ export function installMeshyMainWorldHook() {
         // ignore non-JSON, inaccessible, and malformed responses
       }
     });
-    if (resolvedUrl && meshyProvider.isBinaryAsset(resolvedUrl)) {
-      const requestCandidate = recordDetection(resolvedUrl, true);
-      this.addEventListener('load', () => {
+
+    const requestCandidate = resolvedUrl && meshyProvider.isBinaryAsset(resolvedUrl)
+      ? recordDetection(resolvedUrl, true)
+      : undefined;
+
+    this.addEventListener('load', () => {
+      try {
         const resp = this.response;
-        if (resp instanceof Blob) {
-          captureLoadedBlob(resp, requestCandidate);
-          return;
-        }
-        if (resp instanceof ArrayBuffer && looksLikeGlb(resp)) {
-          if (!requestCandidate) return;
+        if (resp instanceof Blob && resp.size >= 12) {
+          captureLoadedBlob(resp, requestCandidate ?? latestCandidate);
+        } else if (resp instanceof ArrayBuffer && looksLikeGlb(resp)) {
+          const cand = requestCandidate ?? (resolvedUrl ? recordDetection(resolvedUrl, true) : undefined) ?? latestCandidate ?? {
+            id: `meshy-xhr-${Date.now()}-${++detectionSequence}`,
+            modelKey: window.location.href.split('?')[0].split('#')[0],
+            detectedAt: Date.now(),
+          };
+          latestCandidate = cand;
           const copy = resp.slice(0);
-          postToContent('glb-ready', { data: copy, byteLength: copy.byteLength, capturedAt: Date.now(), url: resolvedUrl, modelKey: requestCandidate.modelKey, detectionId: requestCandidate.id }, [copy]);
+          postToContent('glb-ready', {
+            data: copy,
+            byteLength: copy.byteLength,
+            capturedAt: Date.now(),
+            url: resolvedUrl ?? cand.binaryUrl,
+            modelKey: cand.modelKey,
+            detectionId: cand.id,
+          }, [copy]);
         }
-      });
-    }
+      } catch {
+        // ignore
+      }
+    });
 
     return (nativeXhrOpen as Function).apply(this, [method, url, ...rest]);
   };
+
+  // Intercept programmatic anchor tag downloads (e.g. Meshy's Export action creating <a download> for GLB)
+  if (typeof HTMLAnchorElement !== 'undefined' && HTMLAnchorElement.prototype?.click) {
+    const nativeAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      try {
+        const href = this.href;
+        const download = this.download;
+        if (href && (download || /\.glb(?:[?#]|$)/i.test(href))) {
+          if (href.startsWith('blob:')) {
+            void fetch(href)
+              .then((r) => r.blob())
+              .then((b) => captureLoadedBlob(b, latestCandidate))
+              .catch(() => {});
+          } else if (meshyProvider.isBinaryAsset(href) || /\.glb(?:[?#]|$)/i.test(href)) {
+            inspectUrl(href);
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return nativeAnchorClick.apply(this);
+    };
+  }
 
   const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
   if (imageSrcDescriptor?.set) {
@@ -502,24 +542,33 @@ export function installMeshyMainWorldHook() {
       if (reqKey && candidate.modelKey !== reqKey && !candidate.modelKey.includes(reqKey) && !reqKey.includes(candidate.modelKey)) {
         return;
       }
-      const sendBuffer = (buffer: ArrayBuffer) => {
+      const sendBuffer = (buffer: ArrayBuffer, targetCandidate?: DetectionRecord) => {
         if (!looksLikeGlb(buffer)) {
           const header = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(8, buffer.byteLength)));
           if (header.startsWith('MESHY.AI')) return; // Wait for the viewer's decoder.
           throw new Error('The model URL returned data that is not a GLB. Reopen the model and retry.');
         }
+        const activeRec = targetCandidate ?? candidate;
         const copy = buffer.slice(0);
-        postToContent('glb-ready', { data: copy, byteLength: copy.byteLength, capturedAt: Date.now(), url: candidate.binaryUrl, modelKey: candidate.modelKey, detectionId: candidate.id }, [copy]);
+        postToContent('glb-ready', {
+          data: copy,
+          byteLength: copy.byteLength,
+          capturedAt: Date.now(),
+          url: activeRec.binaryUrl,
+          modelKey: activeRec.modelKey,
+          detectionId: activeRec.id,
+        }, [copy]);
       };
+
       const matchesDecoded = lastDecoded && (
         lastDecoded.candidate.modelKey === candidate.modelKey ||
         lastDecoded.candidate.modelKey.includes(candidate.modelKey) ||
         candidate.modelKey.includes(lastDecoded.candidate.modelKey)
       );
       if (matchesDecoded && lastDecoded) {
-        sendBuffer(lastDecoded.buffer);
+        sendBuffer(lastDecoded.buffer, lastDecoded.candidate);
       } else if (lastCapturedBlob && (!candidate.binaryUrl || lastCapturedBlob.modelKey === candidate.modelKey || lastCapturedBlob.modelKey === undefined)) {
-        sendBuffer(lastCapturedBlob.buffer);
+        sendBuffer(lastCapturedBlob.buffer, candidate);
       } else if (candidate.binaryUrl) {
         // Use the page's network context and only a URL already observed there.
         // Encrypted .meshy payloads must still be decoded by the site's viewer.
@@ -528,7 +577,7 @@ export function installMeshyMainWorldHook() {
             if (!response.ok) throw new Error(`Model request failed (HTTP ${response.status}).`);
             return response.arrayBuffer();
           })
-          .then(sendBuffer)
+          .then((buf) => sendBuffer(buf, candidate))
           .catch((error) => postToContent('model-buffer-error', {
             modelKey: candidate.modelKey,
             error: error instanceof Error ? error.message : 'Unable to retrieve the model.',
@@ -541,6 +590,14 @@ export function installMeshyMainWorldHook() {
       if (latestCandidate?.binaryUrl) {
         postToContent('model-binary-detected', {
           url: latestCandidate.binaryUrl,
+          pageUrl: window.location.href,
+          capturedAt: latestCandidate.detectedAt,
+          modelKey: latestCandidate.modelKey,
+          detectionId: latestCandidate.id,
+        });
+      } else if (latestCandidate) {
+        postToContent('model-json-detected', {
+          url: latestCandidate.modelKey,
           pageUrl: window.location.href,
           capturedAt: latestCandidate.detectedAt,
           modelKey: latestCandidate.modelKey,

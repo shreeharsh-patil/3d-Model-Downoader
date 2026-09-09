@@ -25,7 +25,7 @@ async function getActiveTab() {
   }
 }
 
-async function getActiveTabState(): Promise<TabState> {
+async function getActiveTabState(forceRefresh = false): Promise<TabState> {
   const tab = await getActiveTab();
   const tabId = tab?.id;
   const url = tab?.url;
@@ -46,6 +46,10 @@ async function getActiveTabState(): Promise<TabState> {
     return baseState;
   }
 
+  if (forceRefresh) {
+    tabStateManager.remove(tabId);
+  }
+
   // Get or init isolated tab state
   const tabModel = tabStateManager.getOrCreate(tabId, url);
   baseState.model = tabModel.model;
@@ -54,7 +58,10 @@ async function getActiveTabState(): Promise<TabState> {
 
   // Query content script for latest page state
   try {
-    const pageState = (await browser.tabs.sendMessage(tabId, { type: 'get-page-state' })) as PageState;
+    const pageState = (await browser.tabs.sendMessage(tabId, {
+      type: forceRefresh ? 'refresh-detection' : 'get-page-state',
+      refresh: forceRefresh,
+    })) as PageState;
     baseState.page = pageState;
     if (pageState.status) {
       baseState.status = pageState.status;
@@ -64,6 +71,28 @@ async function getActiveTabState(): Promise<TabState> {
       if (baseState.model) {
         baseState.model.previewUrl = pageState.previewUrl;
       }
+    }
+
+    // Always populate or update baseState.model if pageState detected a model!
+    if (pageState.hasDecodedGlb || pageState.hasActiveModel || pageState.modelName) {
+      const modelName = pageState.modelName || baseState.model?.name || 'Current 3D Model';
+      const previewUrl = pageState.previewUrl || baseState.model?.previewUrl;
+      const modelSize = pageState.lastGlbSize || baseState.model?.size;
+      const modelId = pageState.activeModelKey || baseState.model?.id || url || `model-${tabId}`;
+
+      baseState.model = {
+        id: modelId,
+        provider: provider.id,
+        name: modelName,
+        pageUrl: url || '',
+        format: 'glb',
+        detectedAt: baseState.model?.detectedAt || Date.now(),
+        size: modelSize,
+        status: pageState.hasDecodedGlb ? 'ready' : 'detecting',
+        previewUrl,
+        metadata: pageState.metadata || baseState.model?.metadata,
+      };
+      tabStateManager.updateModel(tabId, baseState.model, pageState.generation ?? 1);
     }
   } catch {
     logger.debug('Background', `Content script not yet ready on tab ${tabId}`);
@@ -155,7 +184,11 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'get-active-tab-state') {
-      return getActiveTabState();
+      return getActiveTabState(Boolean((message as { refresh?: boolean }).refresh));
+    }
+
+    if (message.type === 'refresh-active-tab') {
+      return getActiveTabState(true);
     }
 
     if (message.type === 'tab-model-updated') {
