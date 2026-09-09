@@ -6,6 +6,7 @@ import { DownloadJobController } from '../../src/lib/download-job';
 import { validateGlb } from '../../src/lib/glb-validator';
 import { logger } from '../../src/lib/logger';
 import { normalizeQuantizedPositionsInGlb } from '../../src/lib/meshy/gltf-normalizer';
+import { getMeshyPageModelHint, isMeshyModelKeyCorrelatedWithPage } from '../../src/lib/meshy/model-correlation';
 import { getModelKey, meshyModelStore } from '../../src/lib/meshy/model-state';
 import { extractMeshyModelName, extractMeshyThumbnailUrl } from '../../src/lib/meshy/page-context';
 import { embedTextureInGlb, fetchTexturePng, glbHasEmbeddedTextures } from '../../src/lib/meshy/texture-embedder';
@@ -25,26 +26,8 @@ const overlayConfig = {
   fileFormat: 'GLB',
 };
 
-function getPageModelHint(url = window.location.href): string | undefined {
-  try {
-    const parsed = new URL(url, window.location.href);
-    for (const key of ['taskId', 'task_id', 'modelId', 'model_id', 'id']) {
-      const value = parsed.searchParams.get(key);
-      if (value && /^[a-z0-9_-]{8,}$/i.test(value)) return value.toLowerCase();
-    }
-    const routeHint = meshyProvider.extractModelId(parsed.href);
-    if (routeHint && !routeHint.includes('://')) return routeHint.toLowerCase();
-    const pathOrHash = `${parsed.pathname}/${parsed.hash}`;
-    const id = pathOrHash.match(/(?:^|[/=])([a-z0-9_-]{16,})(?:[/&?#]|$)/i)?.[1];
-    return id?.toLowerCase();
-  } catch {
-    return undefined;
-  }
-}
-
 function isCorrelatedWithPage(modelKey: string, url = window.location.href): boolean {
-  const hint = getPageModelHint(url);
-  return Boolean(hint && modelKey.toLowerCase().includes(hint));
+  return isMeshyModelKeyCorrelatedWithPage(modelKey, url);
 }
 
 function notifyOverlay(type: string, detail?: unknown) {
@@ -335,11 +318,12 @@ function handleTextureDetected(url?: string, explicitModelKey?: string) {
 
 function handleRouteChange(url?: string) {
   logger.debug('Meshy', 'SPA Route changed', url);
-  // If navigating to a different model route, reset current model
-  const newModelId = meshyProvider.extractModelId(url || window.location.href);
+  // Only an explicit, different model id proves that the captured asset is
+  // stale. Meshy also updates generic workspace routes while a model is open.
+  const newModelId = getMeshyPageModelHint(url || window.location.href);
   const currentKey = meshyModelStore.currentModelKey;
 
-  if (currentKey && (!newModelId || newModelId.includes('://') || !currentKey.toLowerCase().includes(newModelId.toLowerCase()))) {
+  if (currentKey && newModelId && !currentKey.toLowerCase().includes(newModelId)) {
     meshyModelStore.resetCurrentModel();
     jobs.cancel();
     activeAbortController?.abort();

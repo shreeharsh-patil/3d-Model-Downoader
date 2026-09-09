@@ -3,6 +3,10 @@ import { findMeshyAssetUrlsInObject } from '../src/lib/meshy-main-world-hook';
 import { findGlbUrlsInObject } from '../src/lib/tripo-main-world-hook';
 import { meshyProvider } from '../src/lib/providers/meshy/meshy-provider';
 import { MeshyModelStore } from '../src/lib/meshy/model-state';
+import {
+  getMeshyPageModelHint,
+  isMeshyModelKeyCorrelatedWithPage,
+} from '../src/lib/meshy/model-correlation';
 
 describe('current provider network asset detection', () => {
   it('recognizes Meshy on the bare workspace domain and direct GLBs', () => {
@@ -34,6 +38,30 @@ describe('current provider network asset detection', () => {
     expect(first.generation).toBe(1);
     expect(second.generation).toBe(2);
     expect(store.currentModelKey).toContain('/task/two');
+  });
+
+  it('accepts the active viewer asset on generic Meshy workspace routes', () => {
+    const modelKey = 'https://cdn.meshy.ai/tasks/current-model-id';
+
+    expect(getMeshyPageModelHint('https://www.meshy.ai/workspace')).toBeUndefined();
+    expect(getMeshyPageModelHint('https://www.meshy.ai/workspace/library')).toBeUndefined();
+    expect(isMeshyModelKeyCorrelatedWithPage(modelKey, 'https://www.meshy.ai/workspace')).toBe(true);
+    expect(isMeshyModelKeyCorrelatedWithPage(modelKey, 'https://www.meshy.ai/workspace/library')).toBe(true);
+  });
+
+  it('still rejects a stale asset when the Meshy route names another model', () => {
+    const selectedId = 'selected-model-123456';
+    const pageUrl = `https://www.meshy.ai/workspace/text-to-3d/${selectedId}`;
+
+    expect(getMeshyPageModelHint(pageUrl)).toBe(selectedId);
+    expect(isMeshyModelKeyCorrelatedWithPage(
+      `https://cdn.meshy.ai/tasks/${selectedId}`,
+      pageUrl,
+    )).toBe(true);
+    expect(isMeshyModelKeyCorrelatedWithPage(
+      'https://cdn.meshy.ai/tasks/stale-model-123456',
+      pageUrl,
+    )).toBe(false);
   });
 
   it('extracts relative and protocol-relative Tripo GLBs from JSON', () => {
