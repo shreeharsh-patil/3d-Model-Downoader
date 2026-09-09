@@ -1,4 +1,5 @@
 import { browser, defineBackground } from '#imports';
+import { encodeModelBuffer } from '../src/lib/binary-message';
 import { InvalidGlbError, UnsupportedProviderError } from '../src/lib/errors';
 import { logger } from '../src/lib/logger';
 import { isExtensionMessage } from '../src/lib/messages';
@@ -177,7 +178,7 @@ export default defineBackground(() => {
       return processTripoGlb(url, message.modelName, provider)
         .then((result) => ({
           ok: true,
-          buffer: result.buffer,
+          bufferBase64: encodeModelBuffer(result.buffer),
           byteLength: result.byteLength,
           filename: result.filename,
           validation: result.validation,

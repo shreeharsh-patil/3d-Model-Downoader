@@ -222,6 +222,13 @@ function startModelDownload(targetFormat?: ExportFormat): { ok: boolean; queued?
       generation: job.generation,
       modelKey: job.modelKey,
     });
+    window.postMessage({ source: CONTENT_SOURCE, type: 'request-model-buffer', modelKey: job.modelKey }, window.location.origin);
+    window.setTimeout(() => {
+      if (job.status !== 'queued' || !jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) return;
+      const error = 'The model was detected, but its decoded GLB is unavailable. Open the model in Meshy’s viewer and use its Export/Download action, then retry. If the extension was just reloaded, refresh this page first.';
+      jobs.transition(job, 'error', error);
+      notifyOverlay('download-error', { error, generation: job.generation, modelKey: job.modelKey });
+    }, 30000);
     return { ok: true, queued: true };
   }
 
@@ -237,10 +244,21 @@ function handleGlbReady(buffer: ArrayBuffer, modelKey: string, sourceUrl?: strin
   const validation = validateGlb(buffer);
   if (!validation.valid) {
     logger.warn('Meshy', 'Ignored invalid GLB from worker', validation.reason);
+    const job = jobs.current;
+    if (job?.status === 'queued' && job.modelKey === modelKey && jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) {
+      const error = validation.reason || 'The decoded model is not a valid GLB.';
+      jobs.transition(job, 'error', error);
+      notifyOverlay('download-error', { error, generation: job.generation, modelKey });
+    }
     return;
   }
 
-  const normalizedBuffer = normalizeQuantizedPositionsInGlb(buffer);
+  let normalizedBuffer = buffer;
+  try {
+    normalizedBuffer = normalizeQuantizedPositionsInGlb(buffer);
+  } catch (error) {
+    logger.warn('Meshy', 'Normalization failed; preserving the validated original GLB.', error);
+  }
   const normalizedValidation = validateGlb(normalizedBuffer);
   if (!normalizedValidation.valid) {
     logger.warn('Meshy', 'Normalization produced invalid output; preserving the validated original.', normalizedValidation.reason);
@@ -304,6 +322,10 @@ function handleModelBinaryDetected(url: string | undefined, explicitModelKey?: s
 
   logger.debug('Meshy', 'model.meshy binary URL detected', { modelKey, url });
 
+  if (meshyModelStore.currentModelKey !== modelKey) {
+    jobs.cancel();
+    activeAbortController?.abort();
+  }
   meshyModelStore.noteBinary(modelKey, url ?? modelKey, capturedAt);
   void syncWithBackground();
 }
@@ -362,6 +384,16 @@ export default defineContentScript({
       if (!isMainWorldMessage(data)) return;
 
       switch (data.type) {
+        case 'model-buffer-error': {
+          const payload = data.payload as { modelKey?: string; error?: string };
+          const job = jobs.current;
+          if (job?.status === 'queued' && payload.modelKey === job.modelKey && jobs.isCurrent(job, meshyModelStore.currentModelKey, meshyModelStore.currentGeneration)) {
+            const error = payload.error || 'Unable to retrieve the model.';
+            jobs.transition(job, 'error', error);
+            notifyOverlay('download-error', { error, generation: job.generation, modelKey: job.modelKey });
+          }
+          break;
+        }
         case 'installed':
           injected = true;
           notifyOverlay('injected');

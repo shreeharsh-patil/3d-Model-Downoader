@@ -30,9 +30,9 @@
     return `${kb.toFixed(1)} KB`;
   }
 
-  async function loadData() {
+  async function loadData(preserveNotification = false) {
     loading = true;
-    userMessage = '';
+    if (!preserveNotification) userMessage = '';
     try {
       const [activeTabRes, settingsRes] = await Promise.all([
         browser.runtime.sendMessage({ type: 'get-active-tab-state' }),
@@ -76,12 +76,12 @@
       const res = (await browser.runtime.sendMessage({
         type: 'download-active-tab-mesh',
         exportFormat: selectedFormat,
-      })) as { ok: boolean; error?: string; byteLength?: number };
+      })) as { ok: boolean; queued?: boolean; error?: string; byteLength?: number };
 
       if (res?.ok) {
         const formatLabel = selectedFormat === 'textures' ? 'PBR Textures (.ZIP)' : selectedFormat.toUpperCase();
         setNotification(
-          res.byteLength
+          res.queued ? 'Waiting for the model to finish loading in Meshy’s viewer.' : res.byteLength
             ? `${formatLabel} download started (${formatBytes(res.byteLength)}).`
             : `${formatLabel} download started.`,
         );
@@ -92,7 +92,7 @@
       setNotification(err instanceof Error ? err.message : 'Download request failed.');
     } finally {
       actionLoading = false;
-      await loadData();
+      await loadData(true);
     }
   }
 

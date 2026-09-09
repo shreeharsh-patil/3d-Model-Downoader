@@ -2,6 +2,7 @@ import { browser, createShadowRootUi, defineContentScript } from '#imports';
 import { mount, unmount } from 'svelte';
 import Overlay from './Overlay.svelte';
 import { executeDownload } from '../../src/lib/download-service';
+import { decodeModelBuffer } from '../../src/lib/binary-message';
 import { DownloadJobController } from '../../src/lib/download-job';
 import { validateGlb } from '../../src/lib/glb-validator';
 import { logger } from '../../src/lib/logger';
@@ -303,7 +304,7 @@ async function downloadActiveModel(targetFormat?: ExportFormat) {
     })) as {
       ok: boolean;
       error?: string;
-      buffer?: ArrayBuffer;
+      bufferBase64?: string;
       byteLength?: number;
       filename?: string;
     };
@@ -311,9 +312,9 @@ async function downloadActiveModel(targetFormat?: ExportFormat) {
     if (!jobs.isCurrent(job, tripoModelStore.active?.modelKey, tripoModelStore.generation)) {
       return { ok: false, error: 'Model selection changed during download.' };
     }
-    if (!result?.ok || !result.buffer) throw new Error(result?.error ?? `Failed to process ${provider.label} model.`);
+    if (!result?.ok || !result.bufferBase64) throw new Error(result?.error ?? `Failed to process ${provider.label} model.`);
 
-    let buffer: ArrayBuffer = result.buffer;
+    let buffer = decodeModelBuffer(result.bufferBase64);
     let settings: DownloaderSettings | undefined;
     try {
       settings = (await browser.runtime.sendMessage({ type: 'get-settings' })) as DownloaderSettings;
