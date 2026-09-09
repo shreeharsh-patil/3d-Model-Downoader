@@ -14,6 +14,20 @@ export interface DownloadOptions {
   skipValidation?: boolean;
 }
 
+function getExtensionRuntime(): { sendMessage: (message: unknown) => Promise<unknown>; id?: string } | undefined {
+  const g = globalThis as unknown as {
+    chrome?: { runtime?: { sendMessage: (message: unknown) => Promise<unknown>; id?: string } };
+    browser?: { runtime?: { sendMessage: (message: unknown) => Promise<unknown>; id?: string } };
+  };
+  if (g.chrome?.runtime?.sendMessage) {
+    return g.chrome.runtime;
+  }
+  if (g.browser?.runtime?.sendMessage) {
+    return g.browser.runtime;
+  }
+  return undefined;
+}
+
 export async function executeDownload(
   buffer: ArrayBuffer,
   options: DownloadOptions,
@@ -65,15 +79,16 @@ export async function executeDownload(
     }
   }
 
+
   // Fallback to background browser.downloads API if DOM was unavailable or failed
   if (!downloaded) {
     try {
-      const { browser } = await import('#imports');
+      const runtime = getExtensionRuntime();
       // Only attempt base64 IPC if buffer is within safe message size limit (< 20MB)
-      if (targetBuffer.byteLength <= 20 * 1024 * 1024) {
+      if (runtime && targetBuffer.byteLength <= 20 * 1024 * 1024) {
         const { encodeModelBuffer } = await import('./binary-message');
         const bufferBase64 = encodeModelBuffer(targetBuffer);
-        const downloadRes = (await browser.runtime.sendMessage({
+        const downloadRes = (await runtime.sendMessage({
           type: 'trigger-download',
           bufferBase64,
           filename: finalFilename,
@@ -86,6 +101,8 @@ export async function executeDownload(
         } else {
           logger.debug('DownloadService', `browser.downloads fallback unavailable or rejected: ${downloadRes?.error ?? 'unknown'}`);
         }
+      } else if (!runtime) {
+        logger.debug('DownloadService', 'Extension runtime unavailable for background download fallback');
       } else {
         logger.warn('DownloadService', `Model too large for background IPC fallback (${targetBuffer.byteLength} bytes)`);
       }
@@ -96,9 +113,9 @@ export async function executeDownload(
 
   // Record in history
   try {
-    const { browser } = await import('#imports');
-    if (browser?.runtime?.id) {
-      await browser.runtime.sendMessage({
+    const runtime = getExtensionRuntime();
+    if (runtime?.id) {
+      await runtime.sendMessage({
         type: 'record-download',
         item: {
           modelName: modelName || finalFilename.replace(/\.[^.]+$/i, ''),

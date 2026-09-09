@@ -96,6 +96,61 @@ describe('Download Service', () => {
     expect(clickedElements[0]).toBe(mockAnchor);
   });
 
+  it('records download history via extension runtime without failing on #imports module resolution', async () => {
+    const validGlb = createValidGlbBuffer({
+      asset: { version: '2.0' },
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [{ componentType: 5126, count: 3, type: 'VEC3' }],
+    });
+
+    const sentMessages: any[] = [];
+    vi.stubGlobal('chrome', {
+      runtime: {
+        id: 'test-extension-id',
+        sendMessage: vi.fn(async (msg: any) => {
+          sentMessages.push(msg);
+          return { ok: true };
+        }),
+      },
+    });
+
+    const mockAnchor = {
+      href: '',
+      download: '',
+      style: { display: '' },
+      dataset: {} as Record<string, string>,
+      setAttribute: vi.fn(),
+      hasAttribute: vi.fn(() => true),
+      click: vi.fn(),
+      remove: vi.fn(),
+    };
+
+    vi.stubGlobal('document', {
+      createElement: vi.fn(() => mockAnchor),
+      body: { appendChild: vi.fn() },
+    });
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:test-blob'),
+      revokeObjectURL: vi.fn(),
+    });
+
+    const result = await executeDownload(validGlb, {
+      modelName: 'Demon_Warrior',
+      provider: 'tripo',
+      exportFormat: 'glb',
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockAnchor.click).toHaveBeenCalled();
+
+    // Verify record-download message was sent
+    const historyMessage = sentMessages.find((m) => m.type === 'record-download');
+    expect(historyMessage).toBeDefined();
+    expect(historyMessage.item.provider).toBe('tripo');
+    expect(historyMessage.item.modelName).toBe('Demon_Warrior');
+    expect(historyMessage.item.format).toBe('glb');
+  });
+
   it('rejects invalid GLB buffer with InvalidGlbError', async () => {
     const invalidBuffer = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer;
 
@@ -107,3 +162,4 @@ describe('Download Service', () => {
     ).rejects.toThrow('Buffer is too small to be a GLB');
   });
 });
+
