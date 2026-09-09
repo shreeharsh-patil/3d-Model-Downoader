@@ -178,21 +178,29 @@ export function installMeshyMainWorldHook() {
   }
 
   // SPA navigation hooks
-  const nativePushState = history.pushState;
-  history.pushState = function (...args) {
-    const res = nativePushState.apply(this, args);
-    notifyRouteChanged();
-    return res;
-  };
+  if (typeof history !== 'undefined') {
+    const nativePushState = history.pushState;
+    if (nativePushState) {
+      history.pushState = function (...args) {
+        const res = nativePushState.apply(this, args);
+        notifyRouteChanged();
+        return res;
+      };
+    }
 
-  const nativeReplaceState = history.replaceState;
-  history.replaceState = function (...args) {
-    const res = nativeReplaceState.apply(this, args);
-    notifyRouteChanged();
-    return res;
-  };
+    const nativeReplaceState = history.replaceState;
+    if (nativeReplaceState) {
+      history.replaceState = function (...args) {
+        const res = nativeReplaceState.apply(this, args);
+        notifyRouteChanged();
+        return res;
+      };
+    }
+  }
 
-  window.addEventListener('popstate', notifyRouteChanged);
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('popstate', notifyRouteChanged);
+  }
 
   // Hook Web Workers to capture decoded GLBs (model.meshy deobfuscation result)
   const NativeWorker = window.Worker;
@@ -225,39 +233,41 @@ export function installMeshyMainWorldHook() {
     });
   }
 
-  const nativeWorkerAddEventListener = NativeWorker.prototype.addEventListener;
-  NativeWorker.prototype.addEventListener = function (type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
-    if (type === 'message') attachWorker(this);
-    return nativeWorkerAddEventListener.apply(this, arguments as unknown as Parameters<Worker['addEventListener']>);
-  };
+  if (NativeWorker?.prototype) {
+    const nativeWorkerAddEventListener = NativeWorker.prototype.addEventListener;
+    NativeWorker.prototype.addEventListener = function (type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      if (type === 'message') attachWorker(this);
+      return nativeWorkerAddEventListener.apply(this, arguments as unknown as Parameters<Worker['addEventListener']>);
+    };
 
-  const nativeWorkerPostMessage = NativeWorker.prototype.postMessage;
-  NativeWorker.prototype.postMessage = function (message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions) {
-    recordWorkerRequest(this, message);
-    if (transferOrOptions === undefined) return nativeWorkerPostMessage.call(this, message);
-    return nativeWorkerPostMessage.call(this, message, transferOrOptions as StructuredSerializeOptions);
-  };
+    const nativeWorkerPostMessage = NativeWorker.prototype.postMessage;
+    NativeWorker.prototype.postMessage = function (message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions) {
+      recordWorkerRequest(this, message);
+      if (transferOrOptions === undefined) return nativeWorkerPostMessage.call(this, message);
+      return nativeWorkerPostMessage.call(this, message, transferOrOptions as StructuredSerializeOptions);
+    };
 
-  const onmessageDescriptor = Object.getOwnPropertyDescriptor(NativeWorker.prototype, 'onmessage');
-  if (onmessageDescriptor?.set) {
-    const nativeOnmessageSetter = onmessageDescriptor.set;
-    Object.defineProperty(NativeWorker.prototype, 'onmessage', {
-      ...onmessageDescriptor,
-      set(handler: ((this: Worker, ev: MessageEvent) => unknown) | null) {
-        attachWorker(this);
-        return nativeOnmessageSetter.call(this, handler);
-      },
-    });
+    const onmessageDescriptor = Object.getOwnPropertyDescriptor(NativeWorker.prototype, 'onmessage');
+    if (onmessageDescriptor?.set) {
+      const nativeOnmessageSetter = onmessageDescriptor.set;
+      Object.defineProperty(NativeWorker.prototype, 'onmessage', {
+        ...onmessageDescriptor,
+        set(handler: ((this: Worker, ev: MessageEvent) => unknown) | null) {
+          attachWorker(this);
+          return nativeOnmessageSetter.call(this, handler);
+        },
+      });
+    }
+
+    function WorkerWrapper(this: Worker, scriptURL: string | URL, options?: WorkerOptions): Worker {
+      const worker = new NativeWorker(scriptURL, options);
+      attachWorker(worker);
+      return worker;
+    }
+    WorkerWrapper.prototype = NativeWorker.prototype;
+    Object.setPrototypeOf(WorkerWrapper, NativeWorker);
+    window.Worker = WorkerWrapper as unknown as typeof Worker;
   }
-
-  function WorkerWrapper(this: Worker, scriptURL: string | URL, options?: WorkerOptions): Worker {
-    const worker = new NativeWorker(scriptURL, options);
-    attachWorker(worker);
-    return worker;
-  }
-  WorkerWrapper.prototype = NativeWorker.prototype;
-  Object.setPrototypeOf(WorkerWrapper, NativeWorker);
-  window.Worker = WorkerWrapper as unknown as typeof Worker;
 
   // Inspect network requests (fetch & XHR & Image) for model assets
   function inspectUrl(input: unknown) {
@@ -428,79 +438,85 @@ export function installMeshyMainWorldHook() {
     return promise;
   };
 
-  const nativeXhrOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...rest: unknown[]) {
-    try {
-      inspectUrl(url);
-    } catch {
-      // ignore
-    }
-
-    const resolvedUrl = resolveUrl(url);
-    this.addEventListener('load', () => {
+  if (typeof XMLHttpRequest !== 'undefined' && XMLHttpRequest.prototype?.open) {
+    const nativeXhrOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method: string, url: string | URL, ...rest: unknown[]) {
       try {
-        const contentType = this.getResponseHeader('content-type')?.toLowerCase() ?? '';
-        let json: unknown;
-        if (this.responseType === 'json' && this.response) json = this.response;
-        else if ((this.responseType === '' || this.responseType === 'text') && contentType.includes('json')) json = JSON.parse(this.responseText);
-        if (json) {
-          const assetUrls = findMeshyAssetUrlsInObject(json, this.responseURL || resolvedUrl || window.location.href);
-          const modelUrls = assetUrls.filter((assetUrl) => meshyProvider.isModelAsset(assetUrl));
-          const routeHint = meshyProvider.extractModelId(window.location.href)?.toLowerCase();
-          const filtered = routeHint ? modelUrls.filter((assetUrl) => assetUrl.toLowerCase().includes(routeHint)) : [];
-          const selected = filtered.length > 0 ? filtered : modelUrls;
-          for (const assetUrl of selected) inspectUrl(assetUrl);
-          for (const textureUrl of assetUrls.filter((assetUrl) => meshyProvider.isTexture(assetUrl))) inspectUrl(textureUrl);
-        }
-      } catch {
-        // ignore non-JSON, inaccessible, and malformed responses
-      }
-    });
-
-    const requestCandidate = resolvedUrl && meshyProvider.isBinaryAsset(resolvedUrl)
-      ? recordDetection(resolvedUrl, true)
-      : undefined;
-
-    this.addEventListener('load', () => {
-      try {
-        const resp = this.response;
-        if (resp instanceof Blob && resp.size >= 12) {
-          captureLoadedBlob(resp, requestCandidate ?? latestCandidate);
-        } else if (resp instanceof ArrayBuffer && looksLikeGlb(resp)) {
-          const cand = requestCandidate ?? (resolvedUrl ? recordDetection(resolvedUrl, true) : undefined) ?? latestCandidate ?? {
-            id: `meshy-xhr-${Date.now()}-${++detectionSequence}`,
-            modelKey: window.location.href.split('?')[0].split('#')[0],
-            detectedAt: Date.now(),
-          };
-          latestCandidate = cand;
-          const copy = resp.slice(0);
-          postToContent('glb-ready', {
-            data: copy,
-            byteLength: copy.byteLength,
-            capturedAt: Date.now(),
-            url: resolvedUrl ?? cand.binaryUrl,
-            modelKey: cand.modelKey,
-            detectionId: cand.id,
-          }, [copy]);
-        }
+        inspectUrl(url);
       } catch {
         // ignore
       }
-    });
 
-    return (nativeXhrOpen as Function).apply(this, [method, url, ...rest]);
-  };
+      const resolvedUrl = resolveUrl(url);
+      this.addEventListener('load', () => {
+        try {
+          const contentType = this.getResponseHeader('content-type')?.toLowerCase() ?? '';
+          let json: unknown;
+          if (this.responseType === 'json' && this.response) json = this.response;
+          else if ((this.responseType === '' || this.responseType === 'text') && contentType.includes('json')) json = JSON.parse(this.responseText);
+          if (json) {
+            const assetUrls = findMeshyAssetUrlsInObject(json, this.responseURL || resolvedUrl || window.location.href);
+            const modelUrls = assetUrls.filter((assetUrl) => meshyProvider.isModelAsset(assetUrl));
+            const routeHint = meshyProvider.extractModelId(window.location.href)?.toLowerCase();
+            const filtered = routeHint ? modelUrls.filter((assetUrl) => assetUrl.toLowerCase().includes(routeHint)) : [];
+            const selected = filtered.length > 0 ? filtered : modelUrls;
+            for (const assetUrl of selected) inspectUrl(assetUrl);
+            for (const textureUrl of assetUrls.filter((assetUrl) => meshyProvider.isTexture(assetUrl))) inspectUrl(textureUrl);
+          }
+        } catch {
+          // ignore non-JSON, inaccessible, and malformed responses
+        }
+      });
+
+      const requestCandidate = resolvedUrl && meshyProvider.isBinaryAsset(resolvedUrl)
+        ? recordDetection(resolvedUrl, true)
+        : undefined;
+
+      this.addEventListener('load', () => {
+        try {
+          const resp = this.response;
+          if (resp instanceof Blob && resp.size >= 12) {
+            captureLoadedBlob(resp, requestCandidate ?? latestCandidate);
+          } else if (resp instanceof ArrayBuffer && looksLikeGlb(resp)) {
+            const cand = requestCandidate ?? (resolvedUrl ? recordDetection(resolvedUrl, true) : undefined) ?? latestCandidate ?? {
+              id: `meshy-xhr-${Date.now()}-${++detectionSequence}`,
+              modelKey: window.location.href.split('?')[0].split('#')[0],
+              detectedAt: Date.now(),
+            };
+            latestCandidate = cand;
+            const copy = resp.slice(0);
+            postToContent('glb-ready', {
+              data: copy,
+              byteLength: copy.byteLength,
+              capturedAt: Date.now(),
+              url: resolvedUrl ?? cand.binaryUrl,
+              modelKey: cand.modelKey,
+              detectionId: cand.id,
+            }, [copy]);
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      return (nativeXhrOpen as Function).apply(this, [method, url, ...rest]);
+    };
+  }
 
   // Intercept programmatic anchor tag downloads (e.g. Meshy's Export action creating <a download> for GLB)
   if (typeof HTMLAnchorElement !== 'undefined' && HTMLAnchorElement.prototype?.click) {
     const nativeAnchorClick = HTMLAnchorElement.prototype.click;
     HTMLAnchorElement.prototype.click = function () {
       try {
+        // Skip PolyFetch's own programmatic downloads to avoid capture loops
+        if (this.hasAttribute('data-polyfetch') || this.dataset?.polyfetch === 'true') {
+          return nativeAnchorClick.apply(this);
+        }
         const href = this.href;
         const download = this.download;
         if (href && (download || /\.glb(?:[?#]|$)/i.test(href))) {
           if (href.startsWith('blob:')) {
-            void fetch(href)
+            void (window.fetch || fetch)(href)
               .then((r) => r.blob())
               .then((b) => captureLoadedBlob(b, latestCandidate))
               .catch(() => {});
@@ -515,20 +531,22 @@ export function installMeshyMainWorldHook() {
     };
   }
 
-  const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
-  if (imageSrcDescriptor?.set) {
-    const nativeImageSrcSetter = imageSrcDescriptor.set;
-    Object.defineProperty(HTMLImageElement.prototype, 'src', {
-      ...imageSrcDescriptor,
-      set(value: string) {
-        try {
-          inspectUrl(value);
-        } catch {
-          // ignore
-        }
-        return nativeImageSrcSetter.call(this, value);
-      },
-    });
+  if (typeof HTMLImageElement !== 'undefined') {
+    const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+    if (imageSrcDescriptor?.set) {
+      const nativeImageSrcSetter = imageSrcDescriptor.set;
+      Object.defineProperty(HTMLImageElement.prototype, 'src', {
+        ...imageSrcDescriptor,
+        set(value: string) {
+          try {
+            inspectUrl(value);
+          } catch {
+            // ignore
+          }
+          return nativeImageSrcSetter.call(this, value);
+        },
+      });
+    }
   }
 
   // Answer status requests

@@ -87,4 +87,49 @@ describe('model capture and transport', () => {
     await vi.waitFor(() => expect(messages.find(m => m.type === 'glb-ready')?.payload.modelKey).toBe('https://cdn.meshy.ai/task/three'));
     expect(messages.find(m => m.type === 'glb-ready')?.payload.data).toEqual(glb());
   });
+
+  it('ignores polyfetch download anchors to prevent capture loops', async () => {
+    class AnchorMock {
+      href = '';
+      download = '';
+      dataset: Record<string, string> = {};
+      attributes = new Map<string, string>();
+      setAttribute(name: string, val: string) { this.attributes.set(name, val); }
+      hasAttribute(name: string) { return this.attributes.has(name); }
+      click() {}
+    }
+    const nativeClick = vi.fn();
+    AnchorMock.prototype.click = nativeClick;
+    const fetchSpy = vi.fn(async () => new Response(glb()));
+    const win = {
+      location: { href: 'https://www.meshy.ai/workspace', origin: 'https://www.meshy.ai' },
+      fetch: fetchSpy,
+      postMessage: () => {},
+      addEventListener: () => {},
+    };
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.stubGlobal('window', win);
+    vi.stubGlobal('HTMLAnchorElement', AnchorMock);
+    installMeshyMainWorldHook();
+
+    // Standard anchor with blob URL is fetched to capture model
+    const externalAnchor = new AnchorMock();
+    externalAnchor.href = 'blob:https://www.meshy.ai/meshy-model';
+    externalAnchor.download = 'model.glb';
+    externalAnchor.click();
+    expect(nativeClick).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith('blob:https://www.meshy.ai/meshy-model', undefined);
+
+    fetchSpy.mockClear();
+
+    // PolyFetch download anchor is bypassed without triggering a fetch / re-detection
+    const polyfetchAnchor = new AnchorMock();
+    polyfetchAnchor.href = 'blob:https://www.meshy.ai/polyfetch-export';
+    polyfetchAnchor.download = 'exported.glb';
+    polyfetchAnchor.setAttribute('data-polyfetch', 'true');
+    polyfetchAnchor.click();
+    expect(nativeClick).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
+

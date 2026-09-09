@@ -233,12 +233,15 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'trigger-download') {
-      const { filename, bufferBase64, mimeType } = message;
+      const { filename, bufferBase64, mimeType, url } = message;
       try {
-        const dataUrl = `data:${mimeType || 'application/octet-stream'};base64,${bufferBase64}`;
+        const downloadUrl = url || (bufferBase64 ? `data:${mimeType || 'application/octet-stream'};base64,${bufferBase64}` : undefined);
+        if (!downloadUrl) {
+          return Promise.resolve({ ok: false, error: 'No download URL or buffer provided' });
+        }
         if (browser.downloads?.download) {
           return browser.downloads.download({
-            url: dataUrl,
+            url: downloadUrl,
             filename,
             saveAs: false,
           }).then((downloadId) => {

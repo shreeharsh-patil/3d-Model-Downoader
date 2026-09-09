@@ -36,46 +36,61 @@ export async function executeDownload(
 
   const finalFilename = sanitizeFilename(options.filename || modelName, provider, targetExtension);
 
-  // Attempt download via native browser download manager (bypasses webpage CSP & sandbox restrictions)
-  let downloadedViaBrowser = false;
-  try {
-    const { browser } = await import('#imports');
-    const { encodeModelBuffer } = await import('./binary-message');
-    const bufferBase64 = encodeModelBuffer(targetBuffer);
-    const downloadRes = (await browser.runtime.sendMessage({
-      type: 'trigger-download',
-      bufferBase64,
-      filename: finalFilename,
-      mimeType: targetMimeType,
-    })) as { ok: boolean; error?: string } | undefined;
-
-    if (downloadRes?.ok) {
-      downloadedViaBrowser = true;
-      logger.info('DownloadService', `Started download for ${finalFilename} via browser.downloads (${targetBuffer.byteLength} bytes)`);
-    } else {
-      logger.warn('DownloadService', `browser.downloads unavailable or rejected: ${downloadRes?.error ?? 'unknown'}`);
-    }
-  } catch (err) {
-    logger.warn('DownloadService', 'Failed to trigger background browser download, falling back to DOM anchor', err);
-  }
-
-  // Fallback to DOM anchor tag creation if browser.downloads failed or wasn't available
-  if (!downloadedViaBrowser && typeof document !== 'undefined' && typeof URL !== 'undefined') {
+  // Attempt download via DOM anchor tag: fast, reliable, zero base64 transcoding overhead,
+  // and handles models of any size (including large animated models) without browser IPC limits.
+  let downloaded = false;
+  if (typeof document !== 'undefined' && typeof URL !== 'undefined') {
     const blob = new Blob([targetBuffer], { type: targetMimeType });
     const objectUrl = URL.createObjectURL(blob);
     try {
       const a = document.createElement('a');
       a.href = objectUrl;
       a.download = finalFilename;
+      a.setAttribute('data-polyfetch', 'true');
+      if (a.dataset) {
+        a.dataset.polyfetch = 'true';
+      }
       a.style.display = 'none';
       (document.body || document.documentElement).appendChild(a);
       a.click();
       a.remove();
+      downloaded = true;
       logger.info('DownloadService', `Started download for ${finalFilename} via DOM anchor (${targetBuffer.byteLength} bytes)`);
+    } catch (domErr) {
+      logger.debug('DownloadService', 'DOM anchor download failed, attempting browser.downloads fallback', domErr);
     } finally {
       setTimeout(() => {
         URL.revokeObjectURL(objectUrl);
-      }, 5000);
+      }, 10000);
+    }
+  }
+
+  // Fallback to background browser.downloads API if DOM was unavailable or failed
+  if (!downloaded) {
+    try {
+      const { browser } = await import('#imports');
+      // Only attempt base64 IPC if buffer is within safe message size limit (< 20MB)
+      if (targetBuffer.byteLength <= 20 * 1024 * 1024) {
+        const { encodeModelBuffer } = await import('./binary-message');
+        const bufferBase64 = encodeModelBuffer(targetBuffer);
+        const downloadRes = (await browser.runtime.sendMessage({
+          type: 'trigger-download',
+          bufferBase64,
+          filename: finalFilename,
+          mimeType: targetMimeType,
+        })) as { ok: boolean; error?: string } | undefined;
+
+        if (downloadRes?.ok) {
+          downloaded = true;
+          logger.info('DownloadService', `Started download for ${finalFilename} via browser.downloads (${targetBuffer.byteLength} bytes)`);
+        } else {
+          logger.debug('DownloadService', `browser.downloads fallback unavailable or rejected: ${downloadRes?.error ?? 'unknown'}`);
+        }
+      } else {
+        logger.warn('DownloadService', `Model too large for background IPC fallback (${targetBuffer.byteLength} bytes)`);
+      }
+    } catch (err) {
+      logger.debug('DownloadService', 'Background download fallback failed', err);
     }
   }
 

@@ -16,7 +16,10 @@ class Logger {
         .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+/gi, '$1[REDACTED]');
     }
     if (typeof arg === 'object') {
-      if (arg instanceof Error) return { name: arg.name, message: this.sanitize(arg.message) };
+      if (arg instanceof Error) return `${arg.name}: ${this.sanitize(arg.message)}`;
+      if (arg && typeof (arg as { message?: unknown }).message === 'string') {
+        return this.sanitize((arg as { message: string }).message);
+      }
       if (ArrayBuffer.isView(arg) || arg instanceof ArrayBuffer) {
         return `[Binary ${(arg as ArrayBuffer).byteLength ?? (arg as Uint8Array).byteLength} bytes]`;
       }
